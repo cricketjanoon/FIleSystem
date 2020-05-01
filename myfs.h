@@ -78,6 +78,8 @@ const int data_bitmap_block = 2;
 
 int root_inode_num = 0;
 
+int cur_fd_num = 0;
+
 FILE *disk;
 
 char INODE_BITMAP[4096];			
@@ -118,22 +120,18 @@ int my_open(const char *pathname, int mode)
 	read_data_block(data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
-	printf("root data block address: %p\n", root_dir);
-
 	//search to see if file exists
 	short is_new_file=1; //bool to check if file exist or not
 	char **filenames = root_dir->filenames;
-	for(int j=0; j<root_dir->num_of_files; j++)
+	int j;
+	for(j=0; j<root_dir->num_of_files; j++)
 	{
-		if(strcmp(filenames[j], pathname))
+		if(!strcmp(filenames[j], pathname))
 		{
 			is_new_file = 0;
-			printf("new_file\n");
 			break;
 		}
 	}
-
-	printf("checkpoint 1\n");
 
 	read_data_block(inode_bitmap_block, INODE_BITMAP);
 	read_data_block(data_bitmap_block, DATA_BITMAP);
@@ -143,11 +141,7 @@ int my_open(const char *pathname, int mode)
 		int new_inode_num = get_inode_num(); //TODO: error check
 		inode* new_inode = create_inode(0, block_size); //TODO: change it to the size required
 
-		printf("new file inode num: %d\n", new_inode_num);
-
-
 		int block_num = get_free_datablock(root_inode_num);
-		printf("Free data block for new file: %d\n", block_num);
 
 		if(block_num == -1)
 		{
@@ -172,7 +166,7 @@ int my_open(const char *pathname, int mode)
 		write_data_block(data_bitmap_block, DATA_BITMAP);
 		
 		//add file to the fd table
-		int fd = 11; //TODO: Need to generate random fd
+		int fd = cur_fd_num++; //TODO: Need to generate random fd
 		fd_entry new_fd = {fd, new_inode_num, 0}; 
 		fd_table[cur_fd_entry] = new_fd;
 		cur_fd_entry++;
@@ -181,9 +175,28 @@ int my_open(const char *pathname, int mode)
 	}
 	else
 	{
-		printf("file alread present");
-		return -1;
-		//TODO: When file already exists
+		printf("file alread present: %s\n", pathname);
+
+		int file_inode_num = root_dir->fileinodes[j];
+		
+		// to see if file is already open
+		for(int i=0; i<cur_fd_entry; i++)
+		{
+			if(fd_table[i].inode_num == file_inode_num)
+			{
+				printf("File already opened.\n");
+				//file is alreay opened, so return -1
+				return -1;
+			} 
+		}
+
+		//add file to the fd table
+		int fd = cur_fd_num++; 
+		fd_entry new_fd = {fd, file_inode_num, 0}; 
+		fd_table[cur_fd_entry] = new_fd;
+		cur_fd_entry++;
+
+		return fd;
 	}
 }
 
@@ -325,7 +338,7 @@ int get_inode_num()
 {
 	//printf("give_inum called\n");
 	//readData(inode_bitmap_block,INODE_BITMAP);
-	for (int i = 3; i < total_num_inodes; ++i){
+	for (int i = root_inode_num; i < total_num_inodes; ++i){
 		if(INODE_BITMAP[i]=='0'){
 			INODE_BITMAP[i]='1';
 			return i;
