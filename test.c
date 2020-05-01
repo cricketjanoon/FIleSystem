@@ -2,7 +2,7 @@
 #include "myfs.h"
 int main()
 {
-	// open_disk_file();
+	open_disk_file();
 	MountFS();
 	print_inode_bitmap();
 	print_data_bitmap();
@@ -11,7 +11,7 @@ int main()
 
 	int fd = my_open("test.txt", 1);
 
-	print_root_dir();
+	// print_root_dir();
 
 	printf("main: fd: %d\n", fd);
 

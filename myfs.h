@@ -86,16 +86,27 @@ char DATA_BITMAP[4096];
 
 void print_root_dir()
 {
-	printf("Root Dir\n");
+	printf("************ Root Dir ***************\n");
 	inode *root_inode = (inode *)read_inode(root_inode_num);
-	char data[block_size];
-	read_data_block(root_inode->data_blocks[0], data);
-	dir *root_dir = (dir *)data;
 
+
+	// printf("Root data block: %d\n", root_inode->data_blocks[0]);
+
+	char block[block_size];
+	read_data_block(data_start_block + root_inode->data_blocks[0], block);
+	dir *root_dir = (dir *)block;
+
+	// printf("Root data block address: %p\n", root_dir);
+	// printf("Root dir: num of iles: %d\n", root_dir->num_of_files);
+	// printf("Name: %s\n", root_dir->filenames[0]);
+	// printf("size: %d\n", root_dir->filesizes[0]);
+	// printf("inode: %d\n", root_dir->fileinodes[0]);
 	for(int i=0; i<root_dir->num_of_files; i++)
 	{
-		printf("Filename: %s, Filsizes: %s, inode: %s\n", root_dir->filenames[i], root_dir->filesizes[i], root_dir->fileinodes[0]);
+		printf("Filename: %s, Filsizes: %d, inode: %d\n", root_dir->filenames[i], root_dir->filesizes[i], root_dir->fileinodes[i]);
 	}
+
+	printf("*************************************\n");
 }
 
 
@@ -104,7 +115,7 @@ int my_open(const char *pathname, int mode)
 	//read root inode and data 
 	inode *root_inode = (inode *)read_inode(root_inode_num);
 	char block[block_size];
-	read_data_block(root_inode->data_blocks[0], block);
+	read_data_block(data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
 	printf("root data block address: %p\n", root_dir);
@@ -152,7 +163,9 @@ int my_open(const char *pathname, int mode)
 		root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
 		root_dir->num_of_files++;
 		root_inode->size += new_inode->size;
-		// write_data_block(root_inode_num, root_dir);
+
+
+		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
 
 		write_inode(root_inode, root_inode_num);
 		write_data_block(inode_bitmap_block, INODE_BITMAP);
@@ -249,9 +262,6 @@ void open_disk_file()
 
 void MountFS()
 {
-
-	open_disk_file();
-
     //set data and i-note bitmap to zero
 	for (int i = 0; i < num_data_blocks; ++i)
 	{
@@ -263,7 +273,7 @@ void MountFS()
 	}
 
     //set inode bitmap equal to 1
-	INODE_BITMAP[root_inode_num]='1';
+	INODE_BITMAP[root_inode_num] = '1';
 
 	//creating a directory struct
 	dir *root_dir = (dir *)malloc(sizeof(dir));
@@ -286,7 +296,7 @@ void MountFS()
 	}
 	root->data_blocks[0] = block_num;
 
-	write_data_block(data_start_block+ root->data_blocks[0], (char*)root_dir);
+	write_data_block(data_start_block + root->data_blocks[0], (char*)root_dir);
 	write_inode(root, root_inode_num);
 
 	write_data_block(inode_bitmap_block, INODE_BITMAP);
