@@ -20,12 +20,17 @@ typedef struct dir{
 	int num_of_files;
 } dir;
 
+enum mode { READ, WRITE, APPEND, READ_WRITE }; 
 
 typedef struct fd_entry{
 	int fd;
 	int inode_num;
-	int offset;
+	int read_offset;
+	int write_offset;
+	enum mode mode;
 }fd_entry;
+
+
 
 fd_entry fd_table[10];
 int cur_fd_entry=0;
@@ -133,6 +138,11 @@ int my_open(const char *pathname, int mode)
 		}
 	}
 
+	if(is_new_file==1 && mode == READ)
+	{
+		return -1;
+	}
+
 	read_data_block(inode_bitmap_block, INODE_BITMAP);
 	read_data_block(data_bitmap_block, DATA_BITMAP);
 
@@ -166,11 +176,28 @@ int my_open(const char *pathname, int mode)
 		write_data_block(data_bitmap_block, DATA_BITMAP);
 		
 		//add file to the fd table
-		int fd = cur_fd_num++; //TODO: Need to generate random fd
-		fd_entry new_fd = {fd, new_inode_num, 0}; 
-		fd_table[cur_fd_entry] = new_fd;
-		cur_fd_entry++;
+		int fd = cur_fd_num++; 
+		fd_entry new_fd;
+		
+		if(mode == APPEND)
+		{
+			//TODO: write offset should point to the last
+			fd_entry _fd = {fd, new_inode_num, 0, 0, mode}; 
+			new_fd=_fd;
+		}
+		else if(mode == WRITE)
+		{
+			fd_entry _fd = {fd, new_inode_num, 0, 0, mode}; 
+			new_fd=_fd;
+		}
+		else if(mode = READ_WRITE)
+		{
+			//TODO: write offset should point to the last
+			fd_entry _fd = {fd, new_inode_num, 0, 0, mode}; 
+			new_fd=_fd;
+		}
 
+		fd_table[cur_fd_entry++] = new_fd;
 		return fd;
 	}
 	else
@@ -192,7 +219,7 @@ int my_open(const char *pathname, int mode)
 
 		//add file to the fd table
 		int fd = cur_fd_num++; 
-		fd_entry new_fd = {fd, file_inode_num, 0}; 
+		fd_entry new_fd = {fd, file_inode_num, 0,0, mode}; 
 		fd_table[cur_fd_entry] = new_fd;
 		cur_fd_entry++;
 
@@ -202,67 +229,91 @@ int my_open(const char *pathname, int mode)
 
 int my_write(int fd, void *buffer, int count)
 {
-	fd_entry file;
 	//find find in the file direction
 	//TODO: handle case if file is not found
-	for(int i=0; i<cur_fd_entry; i++)
+	short is_fd_found = 0;
+	int i;
+	for(i=0; i<cur_fd_entry; i++)
 	{
 		if(fd==fd_table[i].fd)
 		{
-			file = fd_table[i];
+			is_fd_found = 1;
 			break;
 		}
 	}
 
-	printf("fd: %d\n", file.fd);
-	printf("inode: %d\n", file.inode_num);
-	printf("offset: %d\n", file.offset);
+	if(!is_fd_found)
+	{
+		printf("file not opened in fd table.\n");
+		return -1;
+	}
 
-	printf("checkpoin0\n");
+	//incase file is found but not opened in write supported mode
+	if(fd_table[i].mode == READ)
+	{
+		printf("file not opened in write supported mode");
+		return -1;
+	}
 
-	inode *cur_file_inode = (inode *)read_inode(file.inode_num);
+	inode *cur_file_inode = (inode *)read_inode(fd_table[i].inode_num);
 
-	printf("checkpoin1\n");
+	//TODO: handle increase in size of the file
+	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_table[i].write_offset;
 
-	printf("cur_file_inode->data_blocks[0]: %d\n", cur_file_inode->data_blocks[0]);
-	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + file.offset;
-	printf("offset: %d\n", offset);
-	printf("inode: %d\n", cur_file_inode->data_blocks[0]);
-
+	printf("write offset: %d\n", offset);
 
 	offset = fseek(disk, offset, SEEK_SET);
 	if(offset != 0) 
-		return 1;
+		return -1;
 
-	printf("before write\n");
-
-	fwrite(buffer, count, 1, disk);
-	return 0; //TODO: handle error conditions
+	int rt = fwrite(buffer, 1, count, disk);
+	fd_table[i].write_offset += count; //update the read_offset
+	printf("fwrite return %d\n", rt);
+	return rt;
 
 }
 
 int my_read(int fd, void *buffer, int count)
 {
-	fd_entry file;
-	//find find in the file direction
-	//TODO: handle case if file is not found
-	for(int i=0; i<cur_fd_entry; i++)
+	//find file in the file descriptor table
+	short is_fd_found = 0;
+	int i;
+	for(i=0; i<cur_fd_entry; i++)
 	{
 		if(fd==fd_table[i].fd)
 		{
-			file = fd_table[i];
+			is_fd_found = 1;
 			break;
 		}
 	}
 
-	inode *cur_file_inode = (inode *)read_inode(file.inode_num);
+	if(!is_fd_found)
+	{
+		printf("file not found in fd table\n");
+		return -1;
+	}
 
-	//setting the dsik pointer to from where to read
-	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + file.offset;
-	offset = fseek(disk, offset, SEEK_SET);
+	if(fd_table[i].mode == READ || fd_table[i].mode == READ_WRITE)
+	{
+		inode *cur_file_inode = (inode *)read_inode(fd_table[i].inode_num);
 
-	fread(buffer, 1, count, disk);
-	return 0; //TODO: check error conditions
+		//setting the dsik pointer to from where to read
+		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_table[i].read_offset;
+		printf("read offset: %d\n", offset);
+		offset = fseek(disk, offset, SEEK_SET);
+		if(offset != 0) 
+			return -1;
+
+		int rt = fread(buffer, 1, count, disk);
+		fd_table[i].read_offset += count; //update the read_offset
+		return rt; //TODO: check error conditions
+	}
+	else
+	{
+		printf("file is not opened in read supported mode.\n");
+		return -1;
+	}
+	
 }
 
 
