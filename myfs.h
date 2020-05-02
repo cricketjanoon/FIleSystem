@@ -28,14 +28,121 @@ typedef struct fd_entry{
 	int read_offset;
 	int write_offset;
 	enum mode mode;
+	void *next;
 }fd_entry;
 
 
 
-fd_entry fd_table[10];
-int cur_fd_entry=0;
+// fd_entry fd_table[10];
+// int cur_fd_entry=0;
+fd_entry *fd_list_head=NULL, *fd_list_tail=NULL;
+int cur_fd_num = 0;
 
+fd_entry *create_fd_entry(int inode_num, int read_offset, int write_offset, enum mode mode)
+{
+	//create a new fd_entry
+	fd_entry *new_entry = (fd_entry*)malloc(sizeof(fd_entry));
+	new_entry->fd = cur_fd_num++;
+	new_entry->inode_num = inode_num;
+	new_entry->read_offset = read_offset;
+	new_entry->write_offset = write_offset;
+	new_entry->mode = mode;
 
+	//add it to the list
+	if(fd_list_head == NULL && fd_list_tail == NULL) //base case: if the list is empty
+	{
+		fd_list_head = new_entry;
+		fd_list_tail = new_entry;
+		new_entry->next = NULL;
+	}
+	else //if list has atleast one element
+	{
+		fd_list_tail->next = new_entry;
+		fd_list_tail = new_entry;
+		new_entry->next = NULL;
+	}
+	
+	return new_entry;
+}
+
+int remove_fd_entry(int inode_num)
+{
+	fd_entry *cur=fd_list_head, *prev=fd_list_head;
+	while(cur != NULL) //traverse the list to find the entry
+	{
+		if(cur !=NULL && cur->inode_num == inode_num)
+		{
+			break;
+		}
+		else
+		{
+			prev = cur;
+			cur = cur->next;
+		}
+	}
+
+	if(cur !=NULL) //if found remove from the list
+	{
+		if(cur == prev) //first element of the list
+		{
+			if(cur==fd_list_tail) //means there was only one element
+			{
+				fd_list_head=NULL;
+				fd_list_tail=NULL;
+				free(cur);
+				return 1;
+			}
+			else
+			{
+				fd_list_head=cur->next;
+				free(cur);
+				return 1;
+			}
+			
+			//consider about lists head an tail while deleting node
+		}
+		else //anywhere from 2nd to last in the list
+		{
+			if(cur==fd_list_tail)//last element of the list
+			{
+				fd_list_tail = prev;
+				fd_list_tail->next = NULL;
+				free(cur);
+				return 1;
+			}
+			else
+			{
+				prev->next = cur->next;
+				free(cur);
+				return 1;		
+			}
+		}
+	}
+	else
+	{
+		printf("Invalid fd to remove.\n");
+		return -1;
+	}
+}
+
+fd_entry *find_fd_entry(int fd_or_inode_num)
+{
+	fd_entry *cur=fd_list_head, *prev=fd_list_head;
+	while(cur != NULL) //traverse the list to find the entry
+	{
+		if(cur !=NULL && (cur->fd == fd_or_inode_num || cur->inode_num == fd_or_inode_num))
+		{
+			break;
+		}
+		else
+		{
+			prev = cur;
+			cur = cur->next;
+		}
+	}
+
+	return cur;
+}
 
 int my_open(const char *pathname, int mode);
 
@@ -83,7 +190,7 @@ const int data_bitmap_block = 2;
 
 int root_inode_num = 0;
 
-int cur_fd_num = 0;
+
 
 FILE *disk;
 
@@ -93,27 +200,20 @@ char DATA_BITMAP[4096];
 
 void print_root_dir()
 {
-	printf("************ Root Dir ***************\n");
+	printf("************ Root Dir ******************************\n");
 	inode *root_inode = (inode *)read_inode(root_inode_num);
-
-
 	// printf("Root data block: %d\n", root_inode->data_blocks[0]);
 
 	char block[block_size];
 	read_data_block(data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
-	// printf("Root data block address: %p\n", root_dir);
-	// printf("Root dir: num of iles: %d\n", root_dir->num_of_files);
-	// printf("Name: %s\n", root_dir->filenames[0]);
-	// printf("size: %d\n", root_dir->filesizes[0]);
-	// printf("inode: %d\n", root_dir->fileinodes[0]);
 	for(int i=0; i<root_dir->num_of_files; i++)
 	{
-		printf("Filename: %s, Filsizes: %d, inode: %d\n", root_dir->filenames[i], root_dir->filesizes[i], root_dir->fileinodes[i]);
+		inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
+		printf("Name: %s, Size: %d, Inode: %d, D-Block: %d\n", root_dir->filenames[i], root_dir->filesizes[i], root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
 	}
-
-	printf("*************************************\n");
+	printf("***************************************************\n");
 }
 
 
@@ -176,29 +276,34 @@ int my_open(const char *pathname, int mode)
 		write_data_block(data_bitmap_block, DATA_BITMAP);
 		
 		//add file to the fd table
-		int fd = cur_fd_num++; 
-		fd_entry new_fd;
+		int read_offset=0;
+		int write_offset=0;
 		
 		if(mode == APPEND)
 		{
 			//TODO: write offset should point to the last
-			fd_entry _fd = {fd, new_inode_num, 0, 0, mode}; 
-			new_fd=_fd;
+			read_offset=0;
+			write_offset=0;
 		}
 		else if(mode == WRITE)
 		{
-			fd_entry _fd = {fd, new_inode_num, 0, 0, mode}; 
-			new_fd=_fd;
+			read_offset=0;
+			write_offset=0;
 		}
 		else if(mode = READ_WRITE)
 		{
 			//TODO: write offset should point to the last
-			fd_entry _fd = {fd, new_inode_num, 0, 0, mode}; 
-			new_fd=_fd;
+			read_offset=0;
+			write_offset=0;
 		}
 
-		fd_table[cur_fd_entry++] = new_fd;
-		return fd;
+		fd_entry *new_fd = create_fd_entry(new_inode_num,read_offset, write_offset, mode);
+
+		if(new_fd!=NULL)
+			return new_fd->fd;
+		else
+			return -1;
+		
 	}
 	else
 	{
@@ -206,59 +311,50 @@ int my_open(const char *pathname, int mode)
 
 		int file_inode_num = root_dir->fileinodes[j];
 		
-		// to see if file is already open
-		for(int i=0; i<cur_fd_entry; i++)
+		fd_entry *file_fd = find_fd_entry(file_inode_num);
+
+		if(file_fd != NULL)
 		{
-			if(fd_table[i].inode_num == file_inode_num)
-			{
-				printf("File already opened.\n");
-				//file is alreay opened, so return -1
-				return -1;
-			} 
+			printf("File already opened.\n");
+			return -1;
 		}
+		else
+		{
+			fd_entry *new_fd = create_fd_entry(file_inode_num, 0, 0, mode);
 
-		//add file to the fd table
-		int fd = cur_fd_num++; 
-		fd_entry new_fd = {fd, file_inode_num, 0,0, mode}; 
-		fd_table[cur_fd_entry] = new_fd;
-		cur_fd_entry++;
+			//TODO: Adjust read and write offset
+			int read_offset = 0;
+			int write_offse = 0;
 
-		return fd;
+			if(new_fd != NULL)
+				return new_fd->fd;
+			else
+				return -1;			
+		}
 	}
 }
 
 int my_write(int fd, void *buffer, int count)
 {
-	//find find in the file direction
-	//TODO: handle case if file is not found
-	short is_fd_found = 0;
-	int i;
-	for(i=0; i<cur_fd_entry; i++)
-	{
-		if(fd==fd_table[i].fd)
-		{
-			is_fd_found = 1;
-			break;
-		}
-	}
-
-	if(!is_fd_found)
+	//find find in the file description list
+	fd_entry *fd_ent = find_fd_entry(fd);
+	if(fd_ent==NULL)
 	{
 		printf("file not opened in fd table.\n");
 		return -1;
 	}
 
 	//incase file is found but not opened in write supported mode
-	if(fd_table[i].mode == READ)
+	if(fd_ent->mode == READ)
 	{
 		printf("file not opened in write supported mode");
 		return -1;
 	}
 
-	inode *cur_file_inode = (inode *)read_inode(fd_table[i].inode_num);
+	inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
 
 	//TODO: handle increase in size of the file
-	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_table[i].write_offset;
+	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->write_offset;
 
 	printf("write offset: %d\n", offset);
 
@@ -267,7 +363,9 @@ int my_write(int fd, void *buffer, int count)
 		return -1;
 
 	int rt = fwrite(buffer, 1, count, disk);
-	fd_table[i].write_offset += count; //update the read_offset
+	fd_ent->write_offset += count; //update the read_offset
+	cur_file_inode->size += count;
+	write_inode(cur_file_inode, fd_ent->inode_num);
 	printf("fwrite return %d\n", rt);
 	return rt;
 
@@ -276,36 +374,28 @@ int my_write(int fd, void *buffer, int count)
 int my_read(int fd, void *buffer, int count)
 {
 	//find file in the file descriptor table
-	short is_fd_found = 0;
-	int i;
-	for(i=0; i<cur_fd_entry; i++)
-	{
-		if(fd==fd_table[i].fd)
-		{
-			is_fd_found = 1;
-			break;
-		}
-	}
+	fd_entry *fd_ent = find_fd_entry(fd);
 
-	if(!is_fd_found)
+	if(fd_ent == NULL)
 	{
 		printf("file not found in fd table\n");
 		return -1;
 	}
 
-	if(fd_table[i].mode == READ || fd_table[i].mode == READ_WRITE)
+	//check if file open in read supported mode
+	if(fd_ent->mode == READ || fd_ent->mode == READ_WRITE)
 	{
-		inode *cur_file_inode = (inode *)read_inode(fd_table[i].inode_num);
+		inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
 
 		//setting the dsik pointer to from where to read
-		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_table[i].read_offset;
+		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->read_offset;
 		printf("read offset: %d\n", offset);
 		offset = fseek(disk, offset, SEEK_SET);
 		if(offset != 0) 
 			return -1;
 
 		int rt = fread(buffer, 1, count, disk);
-		fd_table[i].read_offset += count; //update the read_offset
+		fd_ent->read_offset += count; //update the read_offset
 		return rt; //TODO: check error conditions
 	}
 	else
@@ -316,6 +406,11 @@ int my_read(int fd, void *buffer, int count)
 	
 }
 
+
+int my_close(int fd)
+{
+
+}
 
 void open_disk_file()
 {
