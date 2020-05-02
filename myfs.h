@@ -65,12 +65,12 @@ fd_entry *create_fd_entry(int inode_num, int read_offset, int write_offset, enum
 	return new_entry;
 }
 
-int remove_fd_entry(int inode_num)
+int remove_fd_entry(int fd)
 {
 	fd_entry *cur=fd_list_head, *prev=fd_list_head;
 	while(cur != NULL) //traverse the list to find the entry
 	{
-		if(cur !=NULL && cur->inode_num == inode_num)
+		if(cur !=NULL && cur->fd == fd)
 		{
 			break;
 		}
@@ -356,7 +356,7 @@ int my_write(int fd, void *buffer, int count)
 	//TODO: handle increase in size of the file
 	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->write_offset;
 
-	printf("write offset: %d\n", offset);
+	// printf("write offset: %d\n", offset);
 
 	offset = fseek(disk, offset, SEEK_SET);
 	if(offset != 0) 
@@ -366,7 +366,7 @@ int my_write(int fd, void *buffer, int count)
 	fd_ent->write_offset += count; //update the read_offset
 	cur_file_inode->size += count;
 	write_inode(cur_file_inode, fd_ent->inode_num);
-	printf("fwrite return %d\n", rt);
+	// printf("fwrite return %d\n", rt);
 	return rt;
 
 }
@@ -378,7 +378,7 @@ int my_read(int fd, void *buffer, int count)
 
 	if(fd_ent == NULL)
 	{
-		printf("file not found in fd table\n");
+		printf("myread(): file not found in fd table\n");
 		return -1;
 	}
 
@@ -389,7 +389,7 @@ int my_read(int fd, void *buffer, int count)
 
 		//setting the dsik pointer to from where to read
 		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->read_offset;
-		printf("read offset: %d\n", offset);
+		// printf("read offset: %d\n", offset);
 		offset = fseek(disk, offset, SEEK_SET);
 		if(offset != 0) 
 			return -1;
@@ -400,7 +400,7 @@ int my_read(int fd, void *buffer, int count)
 	}
 	else
 	{
-		printf("file is not opened in read supported mode.\n");
+		printf("myread(): file is not opened in read supported mode.\n");
 		return -1;
 	}
 	
@@ -409,7 +409,28 @@ int my_read(int fd, void *buffer, int count)
 
 int my_close(int fd)
 {
+	fd_entry *fd_ent = find_fd_entry(fd);
 
+	if(fd_ent != NULL)
+	{
+		int rt = remove_fd_entry(fd);
+		if(rt!=1)
+		{
+			printf("Error closing the file.");
+			return -1;
+		}
+		else
+		{
+			printf("my_close: successfully close the file with fd: %d\n", fd);
+			return 0;
+		}
+	}
+	else
+	{
+		printf("No file found with the above fd number.\n");
+		return -1;
+	}
+	
 }
 
 void open_disk_file()
