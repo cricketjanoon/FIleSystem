@@ -16,7 +16,7 @@ typedef struct inode{
 } inode;
 
 typedef struct dir{
-	char *filenames[10];
+	char filenames[10][10];
 	// int filesizes[10];
 	int fileinodes[10];
 	int num_of_files;
@@ -43,7 +43,6 @@ int my_unlink(const char *pathname);
 int my_rmdir(const char *pathname);
 
 void mount_filesystem();
-void open_disk_file();
 
 int get_inode_num();
 int write_inode(inode *ptr, int inumber);
@@ -93,17 +92,16 @@ int my_open(const char *pathname, int mode)
 {
 	//read root inode and data 
 	inode *root_inode = (inode *)read_inode(root_inode_num);
-	char block[block_size];
+	char *block[block_size];
 	read_data_block(data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
 	//search to see if file exists
 	short is_new_file=1; //bool to check if file exist or not
-	char **filenames = root_dir->filenames;
 	int j;
 	for(j=0; j<root_dir->num_of_files; j++)
 	{
-		if(!strcmp(filenames[j], pathname))
+		if(!strcmp(root_dir->filenames[j], pathname))
 		{
 			is_new_file = 0;
 			break;
@@ -136,12 +134,13 @@ int my_open(const char *pathname, int mode)
 		write_inode(new_inode, new_inode_num);
 
 		//update root dir and inode
-		root_dir->filenames[root_dir->num_of_files] = pathname;
+		strcpy(root_dir->filenames[root_dir->num_of_files], pathname);
 		root_dir->fileinodes[root_dir->num_of_files] = new_inode_num;
 		// root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
-		root_dir->num_of_files++;
+		root_dir->num_of_files= root_dir->num_of_files+1;
 		root_inode->size += new_inode->size;
 		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+
 		write_inode(root_inode, root_inode_num);
 
 		//persist data and inode bitmap
@@ -410,7 +409,7 @@ int get_inode_num()
 
 int write_data_block(int blockNum, void *block)
 {
-	int t = fseek(disk, block_size*blockNum, SEEK_SET);
+	fseek(disk, block_size*blockNum, SEEK_SET);
 	int wr_size = fwrite(block, 1, block_size, disk);
     
     //check if all the bytes are written successfully
@@ -423,7 +422,8 @@ int write_data_block(int blockNum, void *block)
 int write_inode(inode *ptr, int inumber)
 {
     //TODO: try to write better code here
-	char *temp = (char*)ptr;
+	char *temp = (char*)malloc(sizeof(inode));
+	temp = (char*)ptr;
 	int t = inode_start_address + (inumber*sizeof(inode));
 	t = fseek(disk, t, SEEK_SET);
 	if(t!=0) 
@@ -573,46 +573,49 @@ fd_entry *find_fd_entry(int fd_or_inode_num)
 
 /* LOG PRINTING FUNCTIONS  */
 
+void unmount_disk()
+{
+	fclose(disk);
+}
+
 void print_root_dir()
 {
-	printf("************ Root Dir ******************************\n");
 	inode *root_inode = (inode *)read_inode(root_inode_num);
-	// printf("Root data block: %d\n", root_inode->data_blocks[0]);
 
-	char block[block_size];
+	char *block[block_size];
 	read_data_block(data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
+	printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
 	for(int i=0; i<root_dir->num_of_files; i++)
 	{
+		// printf("checkpoint3\n");
 		inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
 		printf("Name: %s, Size: %d, Inode: %d, D-Block: %d\n", root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
 	}
-	printf("***************************************************\n");
+	printf("****************************************************\n");
 }
 
 void print_inode_bitmap()
 {
-    printf("Inode Bitmap\n");
-	int x=0;
-	char imap[4096];
-	read_data_block(inode_bitmap_block, imap);
-	for(x=0; x<total_num_inodes; x++)
+    printf("Inode Bitmap: ");
+	char inode_bitmap[block_size];
+	read_data_block(inode_bitmap_block, inode_bitmap);
+	for(int i=0; i<total_num_inodes; i++)
 	{
-		printf("%c ", imap[x] );
+		printf("%c ", inode_bitmap[i]);
 	}
 	printf("\n");
 }
 
 void print_data_bitmap()
 {
-    printf("Data Bitmap\n");
-	char dmap[4096];
-	read_data_block(data_bitmap_block, dmap);
-	int x=0;
-	for(x=0; x<num_data_blocks; x++)
+    printf("Data Bitmap: ");
+	char data_bitmap[block_size];
+	read_data_block(data_bitmap_block, data_bitmap);
+	for(int i=0; i<num_data_blocks; i++)
 	{
-		printf("%c ", dmap[x] );
+		printf("%c ", data_bitmap[i]);
 	}
 	printf("\n");
 }
