@@ -31,6 +31,8 @@ typedef struct fd_entry{
 	void *next;
 }fd_entry;
 
+char *MAGIC_STRING = "882244";
+
 int my_open(const char *pathname, int mode);
 int my_close(int fd);
 int my_read(int fd, void *buffer, int count);
@@ -40,7 +42,7 @@ int my_format(int blocksize);
 int my_unlink(const char *pathname);
 int my_rmdir(const char *pathname);
 
-void MountFS();
+void mount_filesystem();
 void open_disk_file();
 
 int get_inode_num();
@@ -304,18 +306,28 @@ int my_close(int fd)
 		printf("my_close(): No file found with the above fd number.\n");
 		return -1;
 	}
-	
 }
 
-void open_disk_file()
+void mount_filesystem()
 {
-	//TODO: Add check for error checking
 	//open the disk file for both reading and writting
 	disk = fopen("disk.bin","r+"); 
-}
+	if(disk == NULL)
+	{
+		printf("Disk file not found.\n");
+		return;
+	}
 
-void MountFS()
-{
+	//if disk already mounted then return
+	fseek(disk, 0, SEEK_SET);
+	char *magic = (char *)malloc(sizeof(MAGIC_STRING));
+	fread(magic, 1, sizeof(MAGIC_STRING), disk);
+	if(magic!=NULL && !strcmp(magic, MAGIC_STRING))
+	{
+		printf("mount_filesystem(): Disk already mounted.\n");
+		return;
+	}
+
     //set data and i-note bitmap to zero
 	for (int i = 0; i < num_data_blocks; ++i)
 	{
@@ -342,11 +354,9 @@ void MountFS()
  
 	int block_num = get_free_datablock(root_inode_num);
 
-	printf("Free data block for root inode: %d\n", block_num);
-
 	if(block_num == -1)
 	{
-		printf("No disk space. Unable to mount the disk.");
+		printf("No disk space. Unable to mount the disk.\n");
 	}
 	root->data_blocks[0] = block_num;
 
@@ -356,6 +366,11 @@ void MountFS()
 	write_data_block(inode_bitmap_block, INODE_BITMAP);
 	write_data_block(data_bitmap_block, DATA_BITMAP);
 
+	//save magic string at the start of the disk(in super block) so that we know for future use that disk is mounted
+	fseek(disk, 0, SEEK_SET);
+	fwrite(MAGIC_STRING, 1, strlen(MAGIC_STRING), disk);
+
+	printf("mount_filesystem(): Sucessfully mounted disk.\n");
 }
 
 /* HELPER FUNCTIONS */
