@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum mode { READ, WRITE, APPEND, READ_WRITE }; 
+
 typedef struct inode{
 	int isDir;
     int size;
@@ -20,8 +22,6 @@ typedef struct dir{
 	int num_of_files;
 } dir;
 
-enum mode { READ, WRITE, APPEND, READ_WRITE }; 
-
 typedef struct fd_entry{
 	int fd;
 	int inode_num;
@@ -31,12 +31,420 @@ typedef struct fd_entry{
 	void *next;
 }fd_entry;
 
+int my_open(const char *pathname, int mode);
+int my_close(int fd);
+int my_read(int fd, void *buffer, int count);
+int my_write(int fd, void *buffer, int count);
+int my_mkdir(const char *pathname);
+int my_format(int blocksize);
+int my_unlink(const char *pathname);
+int my_rmdir(const char *pathname);
 
+void MountFS();
+void open_disk_file();
 
-// fd_entry fd_table[10];
-// int cur_fd_entry=0;
+int get_inode_num();
+int write_inode(inode *ptr, int inumber);
+int write_data_block(int blockNum, void *block);
+int get_free_datablock(int inumber);
+int read_data_block(int blockNum,void *block);
+char* read_inode(int inum);
+inode* create_inode(int isDir, int size);
+
+void print_inode_bitmap();
+void print_data_bitmap();
+void print_root_dir();
+
+/* file descriptor */
 fd_entry *fd_list_head=NULL, *fd_list_tail=NULL;
 int cur_fd_num = 0;
+
+fd_entry *find_fd_entry(int fd_or_inode_num);
+int remove_fd_entry(int fd);
+fd_entry *create_fd_entry(int inode_num, int read_offset, int write_offset, enum mode mode);
+
+
+/* Super Block Data */
+
+const int block_size = 4096; // 4KB block size
+const int num_data_blocks = 237;
+const int total_num_inodes = 1024;
+
+const int data_start_block = 19; //following zero-indexing
+const int inode_start_block = 3; //following zero-indexing
+
+const int inode_start_address = 4096*3; //inodes start from 3rd block
+const int data_start_addresss = 4096*16; //data blocks start at 16th block
+
+const int inode_bitmap_block = 1;
+const int data_bitmap_block = 2;
+
+int root_inode_num = 0;
+
+char INODE_BITMAP[4096];			
+char DATA_BITMAP[4096];
+
+FILE *disk;
+
+
+int my_open(const char *pathname, int mode)
+{
+	//read root inode and data 
+	inode *root_inode = (inode *)read_inode(root_inode_num);
+	char block[block_size];
+	read_data_block(data_start_block + root_inode->data_blocks[0], block);
+	dir *root_dir = (dir *)block;
+
+	//search to see if file exists
+	short is_new_file=1; //bool to check if file exist or not
+	char **filenames = root_dir->filenames;
+	int j;
+	for(j=0; j<root_dir->num_of_files; j++)
+	{
+		if(!strcmp(filenames[j], pathname))
+		{
+			is_new_file = 0;
+			break;
+		}
+	}
+
+	if(is_new_file==1 && mode == READ)
+	{
+		printf("my_open(): File(READ) already opened.\n");
+		return -1;
+	}
+
+	read_data_block(inode_bitmap_block, INODE_BITMAP);
+	read_data_block(data_bitmap_block, DATA_BITMAP);
+
+	if(is_new_file)
+	{
+		int new_inode_num = get_inode_num(); //TODO: error check
+		inode* new_inode = create_inode(0, block_size); //TODO: change it to the size required
+
+		int block_num = get_free_datablock(root_inode_num);
+
+		if(block_num == -1)
+		{
+			printf("my_open(): No disk space. Unable to create the file.");
+			return -1;
+		}
+		new_inode->data_blocks[0] = block_num;
+
+		write_inode(new_inode, new_inode_num);
+
+		//update root dir and inode
+		root_dir->filenames[root_dir->num_of_files] = pathname;
+		root_dir->fileinodes[root_dir->num_of_files] = new_inode_num;
+		root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
+		root_dir->num_of_files++;
+		root_inode->size += new_inode->size;
+
+
+		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+
+		write_inode(root_inode, root_inode_num);
+		write_data_block(inode_bitmap_block, INODE_BITMAP);
+		write_data_block(data_bitmap_block, DATA_BITMAP);
+		
+		//add file to the fd table
+		int read_offset=0;
+		int write_offset=0;
+		
+		if(mode == APPEND)
+		{
+			//TODO: write offset should point to the last
+			read_offset=0;
+			write_offset=0;
+		}
+		else if(mode == WRITE)
+		{
+			read_offset=0;
+			write_offset=0;
+		}
+		else if(mode = READ_WRITE)
+		{
+			//TODO: write offset should point to the last
+			read_offset=0;
+			write_offset=0;
+		}
+
+		fd_entry *new_fd = create_fd_entry(new_inode_num,read_offset, write_offset, mode);
+
+		if(new_fd!=NULL)
+			return new_fd->fd;
+		else
+			return -1;
+		
+	}
+	else
+	{
+		int file_inode_num = root_dir->fileinodes[j];
+		fd_entry *file_fd = find_fd_entry(file_inode_num);
+
+		if(file_fd != NULL)
+		{
+			printf("my_open(): File already opened.\n");
+			return -1;
+		}
+		else
+		{
+			fd_entry *new_fd = create_fd_entry(file_inode_num, 0, 0, mode);
+
+			//TODO: Adjust read and write offset
+			int read_offset = 0;
+			int write_offse = 0;
+
+			if(new_fd != NULL)
+				return new_fd->fd;
+			else
+				return -1;			
+		}
+	}
+}
+
+int my_write(int fd, void *buffer, int count)
+{
+	//find find in the file description list
+	fd_entry *fd_ent = find_fd_entry(fd);
+	if(fd_ent==NULL)
+	{
+		printf("my_write(): File not opened in fd table.\n");
+		return -1;
+	}
+
+	//incase file is found but not opened in write supported mode
+	if(fd_ent->mode == READ)
+	{
+		printf("my_write(): File not opened in write supported mode\n");
+		return -1;
+	}
+
+	inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
+
+	//TODO: handle increase in size of the file
+	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->write_offset;
+
+	// printf("write offset: %d\n", offset);
+
+	offset = fseek(disk, offset, SEEK_SET);
+	if(offset != 0) 
+		return -1;
+
+	int rt = fwrite(buffer, 1, count, disk);
+	fd_ent->write_offset += count; //update the read_offset
+	cur_file_inode->size += count;
+	write_inode(cur_file_inode, fd_ent->inode_num);
+	printf("my_write(): %d bytes written succesfully.\n", rt);
+	return rt;
+
+}
+
+int my_read(int fd, void *buffer, int count)
+{
+	//find file in the file descriptor table
+	fd_entry *fd_ent = find_fd_entry(fd);
+
+	if(fd_ent == NULL)
+	{
+		printf("my_read(): File not found in fd table.\n");
+		return -1;
+	}
+
+	//check if file open in read supported mode
+	if(fd_ent->mode == READ || fd_ent->mode == READ_WRITE)
+	{
+		inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
+
+		//setting the dsik pointer to from where to read
+		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->read_offset;
+		// printf("read offset: %d\n", offset);
+		offset = fseek(disk, offset, SEEK_SET);
+		if(offset != 0) 
+			return -1;
+
+		int rt = fread(buffer, 1, count, disk);
+		fd_ent->read_offset += count; //update the read_offset
+		printf("my_read(): %d bytes read succesfully.\n", rt);
+		return rt; //TODO: check error conditions
+	}
+	else
+	{
+		printf("my_read(): File is not opened in read supported mode.\n");
+		return -1;
+	}
+	
+}
+
+int my_close(int fd)
+{
+	fd_entry *fd_ent = find_fd_entry(fd);
+
+	if(fd_ent != NULL)
+	{
+		int rt = remove_fd_entry(fd);
+		if(rt!=1)
+		{
+			printf("my_close(): Error closing the file.");
+			return -1;
+		}
+		else
+		{
+			printf("my_close(): Successfully close the file with fd: %d\n", fd);
+			return 0;
+		}
+	}
+	else
+	{
+		printf("my_close(): No file found with the above fd number.\n");
+		return -1;
+	}
+	
+}
+
+void open_disk_file()
+{
+	//TODO: Add check for error checking
+	//open the disk file for both reading and writting
+	disk = fopen("disk.bin","r+"); 
+}
+
+void MountFS()
+{
+    //set data and i-note bitmap to zero
+	for (int i = 0; i < num_data_blocks; ++i)
+	{
+		DATA_BITMAP[i]='0';
+	}
+	for (int i = 0; i < total_num_inodes; ++i)
+	{
+		INODE_BITMAP[i]='0';
+	}
+
+    //set inode bitmap equal to 1
+	INODE_BITMAP[root_inode_num] = '1';
+
+	//creating a directory struct
+	dir *root_dir = (dir *)malloc(sizeof(dir));
+	root_dir->num_of_files = 0;
+
+	//creating an inode struct
+	inode *root = (inode*)malloc(sizeof(inode));
+	int size = sizeof(root_dir);
+	root->size = size;
+	root->num_of_blocks = size/block_size + ((size%block_size)!=0);
+	root->isDir = 1;
+ 
+	int block_num = get_free_datablock(root_inode_num);
+
+	printf("Free data block for root inode: %d\n", block_num);
+
+	if(block_num == -1)
+	{
+		printf("No disk space. Unable to mount the disk.");
+	}
+	root->data_blocks[0] = block_num;
+
+	write_data_block(data_start_block + root->data_blocks[0], (char*)root_dir);
+	write_inode(root, root_inode_num);
+
+	write_data_block(inode_bitmap_block, INODE_BITMAP);
+	write_data_block(data_bitmap_block, DATA_BITMAP);
+
+}
+
+/* HELPER FUNCTIONS */
+
+int get_free_datablock(int inumber)
+{
+	int i=0;
+	//check if any of the datablock is free and return its number
+	while(i < num_data_blocks)
+	{
+		if(DATA_BITMAP[i]=='0')
+		{
+			DATA_BITMAP[i]='1';
+			return i;
+		}
+		i++;
+	}
+	//incase of not finding free-block return -1
+	INODE_BITMAP[inumber] = '0';
+	return -1;
+}
+
+int get_inode_num()
+{
+	//find available inode number
+	for (int i = root_inode_num; i < total_num_inodes; ++i)
+	{
+		if(INODE_BITMAP[i]=='0')
+		{
+			INODE_BITMAP[i]='1';
+			return i;
+		}
+	}
+	//incase no free inode is available, return -1
+	return -1;
+}
+
+int write_data_block(int blockNum, void *block)
+{
+	int t = fseek(disk, block_size*blockNum, SEEK_SET);
+	int wr_size = fwrite(block, 1, block_size, disk);
+    
+    //check if all the bytes are written successfully
+    if(wr_size != block_size)
+        return -1;
+	
+    return 0;
+}
+
+int write_inode(inode *ptr, int inumber)
+{
+    //TODO: try to write better code here
+	char *temp = (char*)ptr;
+	int t = inode_start_address + (inumber*sizeof(inode));
+	t = fseek(disk, t, SEEK_SET);
+	if(t!=0) 
+		return 1;
+	
+	fwrite(temp, 1, sizeof(inode), disk);
+	return 0;
+}
+
+char* read_inode(int inum)
+{
+	int t = inode_start_address+(inum*sizeof(inode));
+	t = fseek(disk, t, SEEK_SET);
+	if(t != 0) 
+		return NULL;
+	
+	char *temp = (char*)malloc(sizeof(char)*sizeof(inode));
+	fread(temp, 1, sizeof(inode), disk);
+
+	return temp;
+}
+
+int read_data_block(int blockNum, void *block)
+{
+	fseek(disk, block_size*blockNum, SEEK_SET);
+	fread(block, 1, block_size, disk);
+
+    return 0;
+}
+
+inode* create_inode(int isDir, int size)
+{
+	inode *new = (inode*)malloc(sizeof(inode));
+	new->size=size;
+	new->num_of_blocks = size/block_size + ((size%block_size)!=0);
+	new->isDir = isDir;
+
+	return new;
+}
+
+/* FILE DESCRIPTOR LIST*/
 
 fd_entry *create_fd_entry(int inode_num, int read_offset, int write_offset, enum mode mode)
 {
@@ -140,63 +548,10 @@ fd_entry *find_fd_entry(int fd_or_inode_num)
 			cur = cur->next;
 		}
 	}
-
 	return cur;
 }
 
-int my_open(const char *pathname, int mode);
-
-int my_close(int fd);
-
-int my_read(int fd, void *buffer, int count);
-
-int my_write(int fd, void *buffer, int count);
-
-int my_mkdir(const char *pathname);
-
-int my_format(int blocksize);
-
-int my_unlink(const char *pathname);
-
-int my_rmdir(const char *pathname);
-
-
-
-
-int write_inode(inode *ptr, int inumber);
-int write_data_block(int blockNum, void *block);
-int get_free_datablock(int inumber);
-int read_data_block(int blockNum,void *block);
-void print_inode_bitmap();
-void print_data_bitmap();
-void MountFS();
-int get_inode_num();
-char* read_inode(int inum);
-inode* create_inode(int isDir, int size);
-
-
-const int block_size = 4096; // 4KB block size
-const int num_data_blocks = 237;
-const int total_num_inodes = 1024;
-
-const int data_start_block = 19; //following zero-indexing
-const int inode_start_block = 3; //following zero-indexing
-
-const int inode_start_address = 4096*3; //inodes start from 3rd block
-const int data_start_addresss = 4096*16; //data blocks start at 16th block
-
-const int inode_bitmap_block = 1;
-const int data_bitmap_block = 2;
-
-int root_inode_num = 0;
-
-
-
-FILE *disk;
-
-char INODE_BITMAP[4096];			
-char DATA_BITMAP[4096];
-
+/* LOG PRINTING FUNCTIONS  */
 
 void print_root_dir()
 {
@@ -214,331 +569,6 @@ void print_root_dir()
 		printf("Name: %s, Size: %d, Inode: %d, D-Block: %d\n", root_dir->filenames[i], root_dir->filesizes[i], root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
 	}
 	printf("***************************************************\n");
-}
-
-
-int my_open(const char *pathname, int mode)
-{
-	//read root inode and data 
-	inode *root_inode = (inode *)read_inode(root_inode_num);
-	char block[block_size];
-	read_data_block(data_start_block + root_inode->data_blocks[0], block);
-	dir *root_dir = (dir *)block;
-
-	//search to see if file exists
-	short is_new_file=1; //bool to check if file exist or not
-	char **filenames = root_dir->filenames;
-	int j;
-	for(j=0; j<root_dir->num_of_files; j++)
-	{
-		if(!strcmp(filenames[j], pathname))
-		{
-			is_new_file = 0;
-			break;
-		}
-	}
-
-	if(is_new_file==1 && mode == READ)
-	{
-		return -1;
-	}
-
-	read_data_block(inode_bitmap_block, INODE_BITMAP);
-	read_data_block(data_bitmap_block, DATA_BITMAP);
-
-	if(is_new_file)
-	{
-		int new_inode_num = get_inode_num(); //TODO: error check
-		inode* new_inode = create_inode(0, block_size); //TODO: change it to the size required
-
-		int block_num = get_free_datablock(root_inode_num);
-
-		if(block_num == -1)
-		{
-			printf("No disk space. Unable to mount the disk.");
-		}
-		new_inode->data_blocks[0] = block_num;
-
-		write_inode(new_inode, new_inode_num);
-
-		//update root dir and inode
-		root_dir->filenames[root_dir->num_of_files] = pathname;
-		root_dir->fileinodes[root_dir->num_of_files] = new_inode_num;
-		root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
-		root_dir->num_of_files++;
-		root_inode->size += new_inode->size;
-
-
-		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
-
-		write_inode(root_inode, root_inode_num);
-		write_data_block(inode_bitmap_block, INODE_BITMAP);
-		write_data_block(data_bitmap_block, DATA_BITMAP);
-		
-		//add file to the fd table
-		int read_offset=0;
-		int write_offset=0;
-		
-		if(mode == APPEND)
-		{
-			//TODO: write offset should point to the last
-			read_offset=0;
-			write_offset=0;
-		}
-		else if(mode == WRITE)
-		{
-			read_offset=0;
-			write_offset=0;
-		}
-		else if(mode = READ_WRITE)
-		{
-			//TODO: write offset should point to the last
-			read_offset=0;
-			write_offset=0;
-		}
-
-		fd_entry *new_fd = create_fd_entry(new_inode_num,read_offset, write_offset, mode);
-
-		if(new_fd!=NULL)
-			return new_fd->fd;
-		else
-			return -1;
-		
-	}
-	else
-	{
-		printf("file alread present: %s\n", pathname);
-
-		int file_inode_num = root_dir->fileinodes[j];
-		
-		fd_entry *file_fd = find_fd_entry(file_inode_num);
-
-		if(file_fd != NULL)
-		{
-			printf("File already opened.\n");
-			return -1;
-		}
-		else
-		{
-			fd_entry *new_fd = create_fd_entry(file_inode_num, 0, 0, mode);
-
-			//TODO: Adjust read and write offset
-			int read_offset = 0;
-			int write_offse = 0;
-
-			if(new_fd != NULL)
-				return new_fd->fd;
-			else
-				return -1;			
-		}
-	}
-}
-
-int my_write(int fd, void *buffer, int count)
-{
-	//find find in the file description list
-	fd_entry *fd_ent = find_fd_entry(fd);
-	if(fd_ent==NULL)
-	{
-		printf("file not opened in fd table.\n");
-		return -1;
-	}
-
-	//incase file is found but not opened in write supported mode
-	if(fd_ent->mode == READ)
-	{
-		printf("file not opened in write supported mode");
-		return -1;
-	}
-
-	inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
-
-	//TODO: handle increase in size of the file
-	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->write_offset;
-
-	// printf("write offset: %d\n", offset);
-
-	offset = fseek(disk, offset, SEEK_SET);
-	if(offset != 0) 
-		return -1;
-
-	int rt = fwrite(buffer, 1, count, disk);
-	fd_ent->write_offset += count; //update the read_offset
-	cur_file_inode->size += count;
-	write_inode(cur_file_inode, fd_ent->inode_num);
-	// printf("fwrite return %d\n", rt);
-	return rt;
-
-}
-
-int my_read(int fd, void *buffer, int count)
-{
-	//find file in the file descriptor table
-	fd_entry *fd_ent = find_fd_entry(fd);
-
-	if(fd_ent == NULL)
-	{
-		printf("myread(): file not found in fd table\n");
-		return -1;
-	}
-
-	//check if file open in read supported mode
-	if(fd_ent->mode == READ || fd_ent->mode == READ_WRITE)
-	{
-		inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
-
-		//setting the dsik pointer to from where to read
-		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->read_offset;
-		// printf("read offset: %d\n", offset);
-		offset = fseek(disk, offset, SEEK_SET);
-		if(offset != 0) 
-			return -1;
-
-		int rt = fread(buffer, 1, count, disk);
-		fd_ent->read_offset += count; //update the read_offset
-		return rt; //TODO: check error conditions
-	}
-	else
-	{
-		printf("myread(): file is not opened in read supported mode.\n");
-		return -1;
-	}
-	
-}
-
-
-int my_close(int fd)
-{
-	fd_entry *fd_ent = find_fd_entry(fd);
-
-	if(fd_ent != NULL)
-	{
-		int rt = remove_fd_entry(fd);
-		if(rt!=1)
-		{
-			printf("Error closing the file.");
-			return -1;
-		}
-		else
-		{
-			printf("my_close: successfully close the file with fd: %d\n", fd);
-			return 0;
-		}
-	}
-	else
-	{
-		printf("No file found with the above fd number.\n");
-		return -1;
-	}
-	
-}
-
-void open_disk_file()
-{
-	//TODO: Add check for error checking
-	//open the disk file for both reading and writting
-	disk = fopen("disk.bin","r+"); 
-}
-
-void MountFS()
-{
-    //set data and i-note bitmap to zero
-	for (int i = 0; i < num_data_blocks; ++i)
-	{
-		DATA_BITMAP[i]='0';
-	}
-	for (int i = 0; i < total_num_inodes; ++i)
-	{
-		INODE_BITMAP[i]='0';
-	}
-
-    //set inode bitmap equal to 1
-	INODE_BITMAP[root_inode_num] = '1';
-
-	//creating a directory struct
-	dir *root_dir = (dir *)malloc(sizeof(dir));
-	root_dir->num_of_files = 0;
-
-	//creating an inode struct
-	inode *root = (inode*)malloc(sizeof(inode));
-	int size = sizeof(root_dir);
-	root->size = size;
-	root->num_of_blocks = size/block_size + ((size%block_size)!=0);
-	root->isDir = 1;
- 
-	int block_num = get_free_datablock(root_inode_num);
-
-	printf("Free data block for root inode: %d\n", block_num);
-
-	if(block_num == -1)
-	{
-		printf("No disk space. Unable to mount the disk.");
-	}
-	root->data_blocks[0] = block_num;
-
-	write_data_block(data_start_block + root->data_blocks[0], (char*)root_dir);
-	write_inode(root, root_inode_num);
-
-	write_data_block(inode_bitmap_block, INODE_BITMAP);
-	write_data_block(data_bitmap_block, DATA_BITMAP);
-
-}
-
-int get_free_datablock(int inumber)
-{
-	int i=0;
-	//check if any of the datablock is free and return its number
-	while(i < num_data_blocks){
-		if(DATA_BITMAP[i]=='0')
-		{
-			DATA_BITMAP[i]='1';
-			return i;
-		}
-		i++;
-	}
-	//incase of not finding free-block return -1
-	INODE_BITMAP[inumber] = '0';
-	return -1;
-}
-
-int get_inode_num()
-{
-	//printf("give_inum called\n");
-	//readData(inode_bitmap_block,INODE_BITMAP);
-	for (int i = root_inode_num; i < total_num_inodes; ++i){
-		if(INODE_BITMAP[i]=='0'){
-			INODE_BITMAP[i]='1';
-			return i;
-		}
-	}
-	return -1;
-}
-
-
-int write_data_block(int blockNum, void *block)
-{
-	int t = fseek(disk, block_size*blockNum, SEEK_SET);
-	int wr_size = fwrite(block, 1, block_size, disk);
-    
-    //check if all the bytes are written successfully
-    if(wr_size != block_size)
-        return -1;
-	
-    return 0;
-}
-
-int write_inode(inode *ptr, int inumber)
-{
-    //TODO: try to write better code here
-	char *temp = (char*)malloc(sizeof(inode));
-	temp = (char*)ptr;
-	int t = inode_start_address + (inumber*sizeof(inode));
-	t = fseek(disk,t,SEEK_SET);
-	if(t!=0) 
-		return 1;
-	
-	fwrite(temp, 1, sizeof(inode), disk);
-	return 0;
 }
 
 void print_inode_bitmap()
@@ -565,99 +595,6 @@ void print_data_bitmap()
 		printf("%c ", dmap[x] );
 	}
 	printf("\n");
-}
-
-char* read_inode(int inum)
-{
-	//printf("read_inode called at address %d\n",inode_start_address + (inum*inode_size));
-	int t=inode_start_address+(inum*sizeof(inode));
-	t=fseek(disk, t, SEEK_SET);
-	if(t!=0) return NULL;
-	char *temp = (char*)malloc(sizeof(char)*sizeof(inode));
-	fread(temp, 1, sizeof(inode), disk);
-	return temp;
-}
-
-int read_data_block(int blockNum, void *block)
-{
-//	printf("readData called at address %d\n",block_size*blockNum);
-	fseek(disk, block_size*blockNum, SEEK_SET);
-	// int i=0;
-	fread(block, 1, block_size, disk);
-    return 0;
-}
-
-
-int writeFile(char *filename, void *block)
-{
-	//printf("writeFile called\n");	
-	inode *i = (inode*)read_inode(root_inode_num);
-	char data[block_size];
-	read_data_block(data_start_block+i->data_blocks[0], data);
-	dir* root_dir = (dir*)data;
-	char **this = root_dir->filenames;
-	int j;
-	for(j=0; j<root_dir->num_of_files; j++)
-	{
-		if(!strcmp(this[j],filename)){
-			printf("\"%s\" file already exists!! Please choose a different name.\n", this[j] );
-			return 1;
-		}
-	}
-
-	read_data_block(inode_bitmap_block,INODE_BITMAP);
-	read_data_block(data_bitmap_block,DATA_BITMAP);
-
-	char *arr = (char*) block;
-	int id = get_inode_num();
-	if(id==-1)
-	{
-		printf("Cannot write more files! Out of inodes\n");
-		return 1;
-	}
-	inode *ptr = create_inode(0, strlen(arr));
-	//printf("File size: %d\n",ptr->size );
-
-
-	//ptr->block_pointers = (int*)malloc(sizeof(int)*ptr->num_of_blocks);
-	ptr->data_blocks[0]= get_free_datablock(id);//,ptr->size,ptr->block_pointers);
-	if(ptr->data_blocks[0]==-1)
-	{
-		printf("Cannot write file! Insufficient disk Space\n");
-		return 1;
-	}
-
-	//printf("write inode: %d\n",id );
-	//printf("write block: %d\n",data_start_block+ptr->block_pointer);
-	write_data_block(data_start_block+ptr->data_blocks[0], block);//!=0);// return 1;
-	write_inode(ptr, id);
-
-	inode *root = (inode*)read_inode(root_inode_num);
-	char rootbuff[block_size];
-	read_data_block(data_start_block+root->data_blocks[0], rootbuff);
-	root_dir =(dir*)rootbuff;
-	root_dir->filenames[root_dir->num_of_files] = filename;
-	root_dir->filesizes[root_dir->num_of_files] = ptr->size;
-	root_dir->fileinodes[root_dir->num_of_files] = id;
-	root_dir->num_of_files++;
-	root->size += ptr->size;
-	write_data_block(data_start_block+root->data_blocks[0], (char*)root_dir);
-	write_inode(root, root_inode_num);
-	write_data_block(inode_bitmap_block, INODE_BITMAP);
-	write_data_block(data_bitmap_block, DATA_BITMAP);
-	return 0;
-}
-
-
-inode* create_inode(int isDir, int size)
-{
-//	printf("create_inode called\n");
-	inode *new = (inode*)malloc(sizeof(inode));
-	new->size=size;
-	new->num_of_blocks = size/block_size + ((size%block_size)!=0);
-
-	new->isDir = isDir;
-	return new;
 }
 
 #endif
