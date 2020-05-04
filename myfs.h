@@ -15,10 +15,13 @@ typedef struct inode{
 	char *double_block;
 } inode;
 
+//for simplicity assuming that a dir can store maximum of 10 files
+int size_of_dir = 10;
 typedef struct dir{
 	char filenames[10][10];
-	// int filesizes[10];
 	int fileinodes[10];
+	int dir_bitmap[10]; //hack to check which of the entry in dir is free
+	// int filesizes[10];
 	int num_of_files;
 } dir;
 
@@ -44,6 +47,7 @@ int my_rmdir(const char *pathname);
 
 void mount_filesystem();
 
+int get_dir_entry(dir* _dir);
 int get_inode_num();
 int write_inode(inode *ptr, int inumber);
 int write_data_block(int blockNum, void *block);
@@ -122,7 +126,7 @@ int my_open(const char *pathname, int mode)
 		int new_inode_num = get_inode_num(); //TODO: error check
 		inode* new_inode = create_inode(0, 0); //creating a inode for file size 0 
 
-		int block_num = get_free_datablock(root_inode_num);
+		int block_num = get_free_datablock(new_inode_num);
 		if(block_num == -1)
 		{
 			printf("my_open(): No disk space. Unable to create the file.");
@@ -133,11 +137,16 @@ int my_open(const char *pathname, int mode)
 		//now that file is created persist the inode in case of crash
 		write_inode(new_inode, new_inode_num);
 
+
+		//get index of free entry in root dir
+		int free_dir_index = get_dir_entry(root_dir);
+
 		//update root dir and inode
-		strcpy(root_dir->filenames[root_dir->num_of_files], pathname);
-		root_dir->fileinodes[root_dir->num_of_files] = new_inode_num;
+		root_dir->dir_bitmap[free_dir_index] = 1;
+		strcpy(root_dir->filenames[free_dir_index], pathname);
+		root_dir->fileinodes[free_dir_index] = new_inode_num;
 		// root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
-		root_dir->num_of_files= root_dir->num_of_files+1;
+		root_dir->num_of_files++;
 		root_inode->size += new_inode->size;
 		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
 
@@ -307,6 +316,59 @@ int my_close(int fd)
 	}
 }
 
+int my_unlink(const char *pathname)
+{
+	inode *root_inode = (inode *)read_inode(root_inode_num);
+	char block[block_size];
+	read_data_block(data_start_block+root_inode->data_blocks[0], block);
+	dir *root_dir = (dir *)block;
+	
+	short file_found = 0;
+	int index;
+	for(index=0; index<size_of_dir; index++)
+	{
+		if(!strcmp(root_dir->filenames[index], pathname) && root_dir->dir_bitmap[index]==1)
+		{
+			file_found = 1;
+			break;
+		}
+	}
+
+	if(file_found)
+	{
+		int file_inode_num = root_dir->fileinodes[index];
+		inode* file_inode = (inode *)read_inode(file_inode_num);
+
+		// free datablock and inode for reuse
+		read_data_block(data_bitmap_block, DATA_BITMAP);
+		read_data_block(inode_bitmap_block ,INODE_BITMAP);
+		DATA_BITMAP[file_inode->data_blocks[0]] = 0;
+		INODE_BITMAP[file_inode_num] = 0;
+		write_data_block(data_bitmap_block, DATA_BITMAP);
+		write_data_block(inode_bitmap_block, INODE_BITMAP);
+
+		//remove entry from the directory
+		root_dir->dir_bitmap[index] = 0;
+		root_dir->num_of_files--;
+		root_inode->size -= file_inode->size;
+
+		//presist root inode data structure
+		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+
+		printf("my_unlink(): file %s unlinked successfully.\n", root_dir->filenames[index]);
+
+		return 0;
+	}
+	else
+	{
+		printf("my_unlink(): file not found.\n");
+		return -1;
+	}
+	
+
+
+}
+
 void mount_filesystem()
 {
 	//open the disk file for both reading and writting
@@ -343,6 +405,8 @@ void mount_filesystem()
 	//creating a directory struct
 	dir *root_dir = (dir *)malloc(sizeof(dir));
 	root_dir->num_of_files = 0;
+	for(int i=0; i<size_of_dir; i++) //resetting all the entries in the dir
+		root_dir->dir_bitmap[i]=0;
 
 	//creating an inode struct
 	inode *root = (inode*)malloc(sizeof(inode));
@@ -373,6 +437,20 @@ void mount_filesystem()
 }
 
 /* HELPER FUNCTIONS */
+
+int get_dir_entry(dir* _dir)
+{
+	for(int i=0; i<size_of_dir; i++)
+	{
+		if(_dir->dir_bitmap[i]==0)
+		{
+			return i;
+		}
+	}
+
+	//if no free entry is found, return -1
+	return -1;
+}
 
 int get_free_datablock(int inumber)
 {
@@ -587,11 +665,13 @@ void print_root_dir()
 	dir *root_dir = (dir *)block;
 
 	printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
-	for(int i=0; i<root_dir->num_of_files; i++)
+	for(int i=0; i<size_of_dir; i++)
 	{
-		// printf("checkpoint3\n");
-		inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
-		printf("Name: %s, Size: %d, Inode: %d, D-Block: %d\n", root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
+		if(root_dir->dir_bitmap[i] == 1)
+		{
+			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
+			printf("Name: %s, Size: %d, Inode: %d, D-Block: %d\n", root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
+		}
 	}
 	printf("****************************************************\n");
 }
