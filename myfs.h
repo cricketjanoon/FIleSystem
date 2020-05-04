@@ -34,7 +34,6 @@ typedef struct fd_entry{
 	void *next;
 }fd_entry;
 
-char *MAGIC_STRING = "882244";
 
 int my_open(const char *pathname, int mode);
 int my_close(int fd);
@@ -70,34 +69,48 @@ fd_entry *create_fd_entry(int inode_num, int read_offset, int write_offset, enum
 
 
 /* Super Block Data */
+char *MAGIC_STRING = "882244";
+#define BLOCK_SIZE 4096
+#define NUM_DATA_BLOCKS 237
+#define TOTAL_NUM_INODES 1024
+#define INODE_START_BLOCK 3
+#define DATA_START_BLOCK 19
+#define INODE_START_ADDRESS BLOCK_SIZE*INODE_START_BLOCK //inodes start from 3rd block
+#define DATA_START_ADDRESS BLOCK_SIZE*DATA_START_BLOCK //inodes start from 3rd block
+#define ROOT_INODE_NUM 0
+#define INODE_BITMAP_BLOCK 1
+#define DATA_BITMAP_BLOCK 2
 
-const int block_size = 4096; // 4KB block size
-const int num_data_blocks = 237;
-const int total_num_inodes = 1024;
+typedef struct super_block{
+	int block_size;
+	int num_data_blocks;
+	int total_num_inodes;
 
-const int data_start_block = 19; //following zero-indexing
-const int inode_start_block = 3; //following zero-indexing
+	int data_start_block;
+	int inode_start_block;
 
-const int inode_start_address = 4096*3; //inodes start from 3rd block
-const int data_start_addresss = 4096*16; //data blocks start at 16th block
+	int inode_start_address;
+	int data_start_addresss;
 
-const int inode_bitmap_block = 1;
-const int data_bitmap_block = 2;
+	int root_inode_num;
+	int inode_bitmap_block;
+	int data_bitmap_block;
 
-int root_inode_num = 0;
+}super_block;
 
 char INODE_BITMAP[4096];			
 char DATA_BITMAP[4096];
 
 FILE *disk;
+super_block *sup_block;
 
 
 int my_open(const char *pathname, int mode)
 {
 	//read root inode and data 
-	inode *root_inode = (inode *)read_inode(root_inode_num);
-	char *block[block_size];
-	read_data_block(data_start_block + root_inode->data_blocks[0], block);
+	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
+	char *block[sup_block->block_size];
+	read_data_block(sup_block->data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
 	//search to see if file exists
@@ -118,8 +131,8 @@ int my_open(const char *pathname, int mode)
 		return -1;
 	}
 
-	read_data_block(inode_bitmap_block, INODE_BITMAP);
-	read_data_block(data_bitmap_block, DATA_BITMAP);
+	read_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
+	read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 
 	if(is_new_file)
 	{
@@ -148,13 +161,13 @@ int my_open(const char *pathname, int mode)
 		// root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
 		root_dir->num_of_files++;
 		root_inode->size += new_inode->size;
-		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+		write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], (char *) root_dir);
 
-		write_inode(root_inode, root_inode_num);
+		write_inode(root_inode, sup_block->root_inode_num);
 
 		//persist data and inode bitmap
-		write_data_block(inode_bitmap_block, INODE_BITMAP);
-		write_data_block(data_bitmap_block, DATA_BITMAP);
+		write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
+		write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 		
 		//select read and write offset depending upon the mode of the file
 		//because new file read and write offset are at the start
@@ -239,7 +252,7 @@ int my_write(int fd, void *buffer, int count)
 	inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
 
 	//TODO: handle increase in size of the file
-	int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->write_offset;
+	int offset = sup_block->data_start_addresss + cur_file_inode->data_blocks[0]*sup_block->block_size + fd_ent->write_offset;
 
 	offset = fseek(disk, offset, SEEK_SET);
 	if(offset != 0) 
@@ -272,7 +285,7 @@ int my_read(int fd, void *buffer, int count)
 		inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
 
 		//setting the dsik pointer to from where to read
-		int offset = data_start_addresss + cur_file_inode->data_blocks[0]*block_size + fd_ent->read_offset;
+		int offset = sup_block->data_start_addresss + cur_file_inode->data_blocks[0]*sup_block->block_size + fd_ent->read_offset;
 		// printf("read offset: %d\n", offset);
 		offset = fseek(disk, offset, SEEK_SET);
 		if(offset != 0) 
@@ -318,9 +331,9 @@ int my_close(int fd)
 
 int my_unlink(const char *pathname)
 {
-	inode *root_inode = (inode *)read_inode(root_inode_num);
-	char block[block_size];
-	read_data_block(data_start_block+root_inode->data_blocks[0], block);
+	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
+	char block[sup_block->block_size];
+	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 	
 	short file_found = 0;
@@ -340,12 +353,12 @@ int my_unlink(const char *pathname)
 		inode* file_inode = (inode *)read_inode(file_inode_num);
 
 		// free datablock and inode for reuse
-		read_data_block(data_bitmap_block, DATA_BITMAP);
-		read_data_block(inode_bitmap_block ,INODE_BITMAP);
+		read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
+		read_data_block(sup_block->inode_bitmap_block ,INODE_BITMAP);
 		DATA_BITMAP[file_inode->data_blocks[0]] = 0;
 		INODE_BITMAP[file_inode_num] = 0;
-		write_data_block(data_bitmap_block, DATA_BITMAP);
-		write_data_block(inode_bitmap_block, INODE_BITMAP);
+		write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
+		write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 
 		//remove entry from the directory
 		root_dir->dir_bitmap[index] = 0;
@@ -353,7 +366,7 @@ int my_unlink(const char *pathname)
 		root_inode->size -= file_inode->size;
 
 		//presist root inode data structure
-		write_data_block(data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+		write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], (char *) root_dir);
 
 		printf("my_unlink(): file %s unlinked successfully.\n", root_dir->filenames[index]);
 
@@ -364,9 +377,6 @@ int my_unlink(const char *pathname)
 		printf("my_unlink(): file not found.\n");
 		return -1;
 	}
-	
-
-
 }
 
 void mount_filesystem()
@@ -375,9 +385,11 @@ void mount_filesystem()
 	disk = fopen("disk.bin","r+"); 
 	if(disk == NULL)
 	{
-		printf("Disk file not found.\n");
+		printf("mount_filesystem(): Disk file not found.\n");
 		return;
 	}
+
+	sup_block = (super_block *)malloc(sizeof(super_block));
 
 	//if disk already mounted then return
 	fseek(disk, 0, SEEK_SET);
@@ -386,21 +398,47 @@ void mount_filesystem()
 	if(magic!=NULL && !strcmp(magic, MAGIC_STRING))
 	{
 		printf("mount_filesystem(): Disk already mounted.\n");
+
+		fseek(disk, strlen(MAGIC_STRING), SEEK_SET);
+		fread(sup_block, 1, sizeof(super_block), disk);
+
+		// printf("sup_ptr->block_size: %d\n", sup_block->block_size);
+		// printf("sup_ptr->inode_bitmap_block: %d\n", sup_block->inode_bitmap_block);
+		// printf("sup_ptr->inode_start_address: %d\n", sup_block->inode_start_address);
 		return;
 	}
 
+	//initialize and save super block at the start of the disk for the first time
+	sup_block->block_size = BLOCK_SIZE;
+	sup_block->num_data_blocks = NUM_DATA_BLOCKS;
+	sup_block->total_num_inodes = TOTAL_NUM_INODES;
+	sup_block->data_start_block = DATA_START_BLOCK;
+	sup_block->inode_start_block = INODE_START_BLOCK;
+	sup_block->inode_start_address = INODE_START_ADDRESS;
+	sup_block->data_start_addresss = DATA_START_ADDRESS;
+	sup_block->root_inode_num = ROOT_INODE_NUM;
+	sup_block->inode_bitmap_block = INODE_BITMAP_BLOCK;
+	sup_block->data_bitmap_block = DATA_BITMAP_BLOCK;
+
+	fseek(disk, strlen(MAGIC_STRING), SEEK_SET);
+	fwrite(sup_block, 1, sizeof(super_block), disk);
+
+	// printf("sup_ptr->block_size: %d\n", sup_block->block_size);
+	// printf("sup_ptr->inode_bitmap_block: %d\n", sup_block->inode_bitmap_block);
+	// printf("sup_ptr->inode_start_address: %d\n", sup_block->inode_start_address);
+
     //set data and i-note bitmap to zero
-	for (int i = 0; i < num_data_blocks; ++i)
+	for (int i = 0; i < sup_block->num_data_blocks; ++i)
 	{
 		DATA_BITMAP[i]='0';
 	}
-	for (int i = 0; i < total_num_inodes; ++i)
+	for (int i = 0; i < sup_block->total_num_inodes; ++i)
 	{
 		INODE_BITMAP[i]='0';
 	}
 
     //set inode bitmap equal to 1
-	INODE_BITMAP[root_inode_num] = '1';
+	INODE_BITMAP[sup_block->root_inode_num] = '1';
 
 	//creating a directory struct
 	dir *root_dir = (dir *)malloc(sizeof(dir));
@@ -415,7 +453,7 @@ void mount_filesystem()
 	// root->num_of_blocks = size/block_size + ((size%block_size)!=0);
 	root->isDir = 1;
  
-	int block_num = get_free_datablock(root_inode_num);
+	int block_num = get_free_datablock(sup_block->root_inode_num);
 
 	if(block_num == -1)
 	{
@@ -423,11 +461,11 @@ void mount_filesystem()
 	}
 	root->data_blocks[0] = block_num;
 
-	write_data_block(data_start_block + root->data_blocks[0], (char*)root_dir);
-	write_inode(root, root_inode_num);
+	write_data_block(sup_block->data_start_block + root->data_blocks[0], (char*)root_dir);
+	write_inode(root, sup_block->root_inode_num);
 
-	write_data_block(inode_bitmap_block, INODE_BITMAP);
-	write_data_block(data_bitmap_block, DATA_BITMAP);
+	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
+	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 
 	//save magic string at the start of the disk(in super block) so that we know for future use that disk is mounted
 	fseek(disk, 0, SEEK_SET);
@@ -456,7 +494,7 @@ int get_free_datablock(int inumber)
 {
 	int i=0;
 	//check if any of the datablock is free and return its number
-	while(i < num_data_blocks)
+	while(i < sup_block->num_data_blocks)
 	{
 		if(DATA_BITMAP[i]=='0')
 		{
@@ -473,7 +511,7 @@ int get_free_datablock(int inumber)
 int get_inode_num()
 {
 	//find available inode number
-	for (int i = root_inode_num; i < total_num_inodes; ++i)
+	for (int i = sup_block->root_inode_num; i < sup_block->total_num_inodes; ++i)
 	{
 		if(INODE_BITMAP[i]=='0')
 		{
@@ -487,11 +525,11 @@ int get_inode_num()
 
 int write_data_block(int blockNum, void *block)
 {
-	fseek(disk, block_size*blockNum, SEEK_SET);
-	int wr_size = fwrite(block, 1, block_size, disk);
+	fseek(disk, sup_block->block_size*blockNum, SEEK_SET);
+	int wr_size = fwrite(block, 1, sup_block->block_size, disk);
     
     //check if all the bytes are written successfully
-    if(wr_size != block_size)
+    if(wr_size != sup_block->block_size)
         return -1;
 	
     return 0;
@@ -502,7 +540,7 @@ int write_inode(inode *ptr, int inumber)
     //TODO: try to write better code here
 	char *temp = (char*)malloc(sizeof(inode));
 	temp = (char*)ptr;
-	int t = inode_start_address + (inumber*sizeof(inode));
+	int t = sup_block->inode_start_address + (inumber*sizeof(inode));
 	t = fseek(disk, t, SEEK_SET);
 	if(t!=0) 
 		return 1;
@@ -513,7 +551,7 @@ int write_inode(inode *ptr, int inumber)
 
 char* read_inode(int inum)
 {
-	int t = inode_start_address+(inum*sizeof(inode));
+	int t = sup_block->inode_start_address+(inum*sizeof(inode));
 	t = fseek(disk, t, SEEK_SET);
 	if(t != 0) 
 		return NULL;
@@ -526,8 +564,8 @@ char* read_inode(int inum)
 
 int read_data_block(int blockNum, void *block)
 {
-	fseek(disk, block_size*blockNum, SEEK_SET);
-	fread(block, 1, block_size, disk);
+	fseek(disk, sup_block->block_size*blockNum, SEEK_SET);
+	fread(block, 1, sup_block->block_size, disk);
 
     return 0;
 }
@@ -658,10 +696,10 @@ void unmount_disk()
 
 void print_root_dir()
 {
-	inode *root_inode = (inode *)read_inode(root_inode_num);
+	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
 
-	char *block[block_size];
-	read_data_block(data_start_block + root_inode->data_blocks[0], block);
+	char *block[sup_block->block_size];
+	read_data_block(sup_block->data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
 	printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
@@ -679,9 +717,9 @@ void print_root_dir()
 void print_inode_bitmap()
 {
     printf("Inode Bitmap: ");
-	char inode_bitmap[block_size];
-	read_data_block(inode_bitmap_block, inode_bitmap);
-	for(int i=0; i<total_num_inodes; i++)
+	char inode_bitmap[sup_block->block_size];
+	read_data_block(sup_block->inode_bitmap_block, inode_bitmap);
+	for(int i=0; i<sup_block->total_num_inodes; i++)
 	{
 		printf("%c ", inode_bitmap[i]);
 	}
@@ -691,9 +729,9 @@ void print_inode_bitmap()
 void print_data_bitmap()
 {
     printf("Data Bitmap: ");
-	char data_bitmap[block_size];
-	read_data_block(data_bitmap_block, data_bitmap);
-	for(int i=0; i<num_data_blocks; i++)
+	char data_bitmap[sup_block->block_size];
+	read_data_block(sup_block->data_bitmap_block, data_bitmap);
+	for(int i=0; i<sup_block->num_data_blocks; i++)
 	{
 		printf("%c ", data_bitmap[i]);
 	}
