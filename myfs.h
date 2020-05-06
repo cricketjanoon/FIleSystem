@@ -116,12 +116,15 @@ int my_open(const char *pathname, int mode)
 	//search to see if file exists
 	short is_new_file=1; //bool to check if file exist or not
 	int j;
-	for(j=0; j<root_dir->num_of_files; j++)
+	for(j=0; j<size_of_dir; j++)
 	{
-		if(!strcmp(root_dir->filenames[j], pathname))
+		if(root_dir->dir_bitmap[j] == 1 && !strcmp(root_dir->filenames[j], pathname))
 		{
-			is_new_file = 0;
-			break;
+			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[j]);
+			if(!inode_ptr->isDir)
+			{	is_new_file = 0;
+				break;
+			}
 		}
 	}
 
@@ -419,6 +422,71 @@ int my_format(int blocksize)
 	}
 }
 
+int my_mkdir(const char *pathname)
+{
+	inode* root_inode = (inode *)read_inode(sup_block->root_inode_num);
+
+	char block[sup_block->block_size];
+	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
+	dir* root_dir = (dir *)block;
+
+	int index = get_dir_entry(root_dir);
+
+	root_dir->dir_bitmap[index] = 1;
+
+
+	short is_dir_already_present=0; //bool to check if file exist or not
+	int j;
+	for(j=0; j<size_of_dir; j++)
+	{
+		if(root_dir->dir_bitmap[j] == 1 && !strcmp(root_dir->filenames[j], pathname))
+		{
+			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[j]);
+			if(inode_ptr->isDir)
+			{	is_dir_already_present = 1;
+				break;
+			}
+		}
+	}
+
+	if(is_dir_already_present)
+	{
+		printf("my_mkdir(): dir with name '%s' already present.\n", pathname);
+		return -1;
+	}
+
+	read_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
+	read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
+
+	int new_dir_inode_num = get_inode_num();
+	inode* new_dir_inode = create_inode(1, 0);
+	int block_num = get_free_datablock(new_dir_inode_num);
+	if(block_num == -1)
+	{
+		printf("my_mkdir(): not enough space.\n");
+		return -1;
+	}
+	new_dir_inode->data_blocks[0]=block_num;
+
+	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
+	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
+
+	strcpy(root_dir->filenames[index], pathname);
+	root_dir->fileinodes[index] = new_dir_inode_num;
+
+	dir* new_dir = (dir *)malloc(sizeof(dir));
+	new_dir->num_of_files = 0;
+	for(int i=0; i<size_of_dir; i++) //resetting all the entries in the dir
+		new_dir->dir_bitmap[i]=0;
+
+	write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], root_dir);
+	write_data_block(sup_block->data_start_block+new_dir_inode->data_blocks[0], new_dir);
+	write_inode(new_dir_inode, new_dir_inode_num);
+	
+	printf("my_mkdir(): \"%s\" dir successfully created.\n", pathname);
+	return 0;
+}
+
 void mount_filesystem()
 {
 	//open the disk file for both reading and writting
@@ -498,6 +566,7 @@ void mount_filesystem()
 	if(block_num == -1)
 	{
 		printf("No disk space. Unable to mount the disk.\n");
+		return;
 	}
 	root->data_blocks[0] = block_num;
 
@@ -710,7 +779,7 @@ fd_entry *find_fd_entry(int fd_or_inode_num)
 	fd_entry *cur=fd_list_head, *prev=fd_list_head;
 	while(cur != NULL) //traverse the list to find the entry
 	{
-		if(cur !=NULL && (cur->fd == fd_or_inode_num || cur->inode_num == fd_or_inode_num))
+		if(cur->fd == fd_or_inode_num || cur->inode_num == fd_or_inode_num)
 		{
 			break;
 		}
@@ -758,7 +827,7 @@ void print_root_dir()
 		if(root_dir->dir_bitmap[i] == 1)
 		{
 			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
-			printf("Name: %s, Size: %d, Inode: %d, D-Block: %d\n", root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
+			printf("%d Name: %s, Size: %d, Inode: %d, D-Block: %d\n", inode_ptr->isDir, root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
 		}
 	}
 	printf("****************************************************\n");
