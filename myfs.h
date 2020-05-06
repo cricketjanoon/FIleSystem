@@ -356,7 +356,7 @@ int my_unlink(const char *pathname)
 		read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 		read_data_block(sup_block->inode_bitmap_block ,INODE_BITMAP);
 		DATA_BITMAP[file_inode->data_blocks[0]] = 0;
-		INODE_BITMAP[file_inode_num] = 0;
+		INODE_BITMAP[file_inode_num] = '0';
 		write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 		write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 
@@ -381,18 +381,23 @@ int my_unlink(const char *pathname)
 
 int my_format(int blocksize)
 {
+	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
+	
 	read_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 	read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
+	
 
 	for(int i=0; i<sup_block->num_data_blocks; i++)
-		DATA_BITMAP[i] = 0;
+		DATA_BITMAP[i] = '0';
 	for(int i=0; i<sup_block->total_num_inodes; i++)
-		INODE_BITMAP[i] = 0;
+		INODE_BITMAP[i] = '0';
+
+	INODE_BITMAP[sup_block->root_inode_num] = '1';
+	DATA_BITMAP[root_inode->data_blocks[0]] = '1';
 
 	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
-	write_data_block(sup_block->total_num_inodes, INODE_BITMAP);
+	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 
-	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
 	char block[sup_block->block_size];
 	read_data_block(root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
@@ -405,7 +410,13 @@ int my_format(int blocksize)
 	}
 
 	write_inode(root_inode, sup_block->root_inode_num);
-	write_data_block(root_inode->data_blocks[0], root_dir);
+	write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], root_dir);
+
+	//remove any open files from fd_table
+	while(fd_list_head != NULL)
+	{
+		remove_fd_entry(fd_list_head->fd);
+	}
 }
 
 void mount_filesystem()
