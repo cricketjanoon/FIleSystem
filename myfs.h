@@ -105,6 +105,48 @@ FILE *disk;
 super_block *sup_block;
 
 
+//Due to shortage of time, I din't write the whole logic myself istead borrowed the function
+// and used it for my purpoes accordingly (6th May, 2020)
+// ref: https://stackoverflow.com/questions/27261558/splitting-up-a-path-string-in-c
+char **split_pathname(char *path, int *size)
+{
+    char *tmp;
+    char **splitted = NULL;
+    int i, length;
+
+    if (!path){
+        goto Exit;
+    }
+
+    tmp = strdup(path);
+    length = strlen(tmp);
+
+    *size = 1;
+    for (i = 0; i < length; i++) {
+        if (tmp[i] == '/') {
+            tmp[i] = '\0';
+            (*size)++;
+        }
+    }
+
+    splitted = (char **)malloc(*size * sizeof(*splitted));
+    if (!splitted) {
+        free(tmp);
+        goto Exit;
+    }
+
+    for (i = 0; i < *size; i++) {
+        splitted[i] = strdup(tmp);
+        tmp += strlen(splitted[i]) + 1;
+    }
+    return splitted;
+
+Exit:
+    *size = 0;
+    return NULL;
+}
+
+
 int my_open(const char *pathname, int mode)
 {
 	//read root inode and data 
@@ -113,14 +155,86 @@ int my_open(const char *pathname, int mode)
 	read_data_block(sup_block->data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
+	dir* parent_dir;
+	inode* parent_dir_inode;
+	int parent_dir_inode_num;
+
+	char *dup_pathname = strdup(pathname);
+
+	int size;
+	char **splited_pathname;
+	char filename[10];
+	
+	splited_pathname = split_pathname(dup_pathname, &size);
+
+	if(size==1)
+	{
+		strcpy(filename, pathname);
+		printf("-> %s\n", filename);
+		parent_dir = root_dir;
+		parent_dir_inode = root_inode;
+		parent_dir_inode_num = sup_block->root_inode_num;
+	}
+	else
+	{
+		dir* cur_dir=root_dir;
+		inode* cur_dir_inode=root_inode;
+		int cur_dir_inode_num=sup_block->root_inode_num;
+
+		for(int i=0; i<size; i++)
+		{
+			if(i==size-1)
+			{
+				printf("-> splited_pathname[i]): %s\n", splited_pathname[i]);
+				strcpy(filename, splited_pathname[i]);
+				printf("-> %s\n", filename);
+				parent_dir = cur_dir;
+				parent_dir_inode = cur_dir_inode;
+				parent_dir_inode_num = cur_dir_inode_num;
+			}
+			else
+			{
+				int result_found = 0;
+				for(int k=0; k<size_of_dir; k++)
+				{
+					if(cur_dir->dir_bitmap[k]==1 && !strcmp(cur_dir->filenames[k], splited_pathname[i]))
+					{
+						inode* in = (inode *) read_inode(cur_dir->fileinodes[k]);
+						if(in->isDir)
+						{
+							cur_dir_inode_num = cur_dir->fileinodes[k];
+							cur_dir_inode = in;
+							read_data_block(sup_block->data_start_block+in->data_blocks[0], block);
+							cur_dir = (dir *)block;
+							result_found = 1;
+							break;
+						}
+						else
+						{
+							continue;
+						}
+					}
+				}
+
+				if(!result_found)
+				{
+					printf("my_open(): Invalid pathanme '%s'. \n", pathname);
+					return -1;
+				}
+			}
+		}
+	}
+	
+
+
 	//search to see if file exists
 	short is_new_file=1; //bool to check if file exist or not
 	int j;
 	for(j=0; j<size_of_dir; j++)
 	{
-		if(root_dir->dir_bitmap[j] == 1 && !strcmp(root_dir->filenames[j], pathname))
+		if(parent_dir->dir_bitmap[j] == 1 && !strcmp(parent_dir->filenames[j], filename))
 		{
-			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[j]);
+			inode* inode_ptr = (inode *)read_inode(parent_dir->fileinodes[j]);
 			if(!inode_ptr->isDir)
 			{	is_new_file = 0;
 				break;
@@ -154,18 +268,19 @@ int my_open(const char *pathname, int mode)
 		write_inode(new_inode, new_inode_num);
 
 		//get index of free entry in root dir
-		int free_dir_index = get_dir_entry(root_dir);
+		int free_dir_index = get_dir_entry(parent_dir);
 
 		//update root dir and inode
-		root_dir->dir_bitmap[free_dir_index] = 1;
-		strcpy(root_dir->filenames[free_dir_index], pathname);
-		root_dir->fileinodes[free_dir_index] = new_inode_num;
+		parent_dir->dir_bitmap[free_dir_index] = 1;
+		strcpy(parent_dir->filenames[free_dir_index], filename);
+		printf("my_open(): filename: %s\n", parent_dir->filenames[free_dir_index]);
+		parent_dir->fileinodes[free_dir_index] = new_inode_num;
 		// root_dir->filesizes[root_dir->num_of_files] = new_inode->size;
-		root_dir->num_of_files++;
-		root_inode->size += new_inode->size;
-		write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+		parent_dir->num_of_files++;
+		parent_dir_inode->size += new_inode->size;
+		write_data_block(sup_block->data_start_block+parent_dir_inode->data_blocks[0], (char *) parent_dir);
 
-		write_inode(root_inode, sup_block->root_inode_num);
+		write_inode(parent_dir_inode, parent_dir_inode_num);
 
 		//persist data and inode bitmap
 		write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
@@ -178,6 +293,8 @@ int my_open(const char *pathname, int mode)
 		
 		fd_entry *new_fd = create_fd_entry(new_inode_num, read_offset, write_offset, mode);
 
+		// free(filename);
+
 		if(new_fd!=NULL)
 			return new_fd->fd;
 		else
@@ -186,7 +303,7 @@ int my_open(const char *pathname, int mode)
 	}
 	else //if file with the name found in the directory
 	{
-		int file_inode_num = root_dir->fileinodes[j];
+		int file_inode_num = parent_dir->fileinodes[j];
 
 		//check to see if file is already opened
 		fd_entry *file_fd = find_fd_entry(file_inode_num);
@@ -425,23 +542,91 @@ int my_format(int blocksize)
 int my_mkdir(const char *pathname)
 {
 	inode* root_inode = (inode *)read_inode(sup_block->root_inode_num);
-
 	char block[sup_block->block_size];
 	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
 	dir* root_dir = (dir *)block;
 
-	int index = get_dir_entry(root_dir);
+	dir* parent_dir;
+	inode* parent_dir_inode;
+	int parent_dir_inode_num;
 
-	root_dir->dir_bitmap[index] = 1;
+	char *dup_pathname = strdup(pathname);
+
+	int size;
+	char **splited_pathname;
+	char *filename;
+	
+	splited_pathname = split_pathname(dup_pathname, &size);
+
+	if(size==1)
+	{
+		printf("successful\n");
+		filename = strdup(pathname);
+		parent_dir = root_dir;
+		parent_dir_inode = root_inode;
+		parent_dir_inode_num = sup_block->root_inode_num;
+	}
+	else
+	{
+		dir* cur_dir=root_dir;
+		inode* cur_dir_inode=root_inode;
+		int cur_dir_inode_num=sup_block->root_inode_num;
+
+		for(int i=0; i<size; i++)
+		{
+			if(i==size-1)
+			{
+				filename = splited_pathname[i];
+				parent_dir = cur_dir;
+				parent_dir_inode = cur_dir_inode;
+				parent_dir_inode_num = cur_dir_inode_num;
+			}
+			else
+			{
+				int result_found = 0;
+				for(int k=0; k<size_of_dir; k++)
+				{
+					if(cur_dir->dir_bitmap[k]==1 && !strcmp(cur_dir->filenames[k], splited_pathname[i]))
+					{
+						inode* in = (inode *) read_inode(cur_dir->fileinodes[k]);
+						if(in->isDir)
+						{
+							cur_dir_inode_num = cur_dir->fileinodes[k];
+							cur_dir_inode = in;
+							read_data_block(sup_block->data_start_block+in->data_blocks[0], block);
+							cur_dir = (dir *)block;
+							result_found = 1;
+							break;
+						}
+						else
+						{
+							continue;
+						}
+					}
+				}
+
+				if(!result_found)
+				{
+					printf("my_mkdir(): Invalid pathanme '%s'. \n", pathname);
+					return -1;
+				}
+			}
+		}
+	}
+
+
+	int index = get_dir_entry(parent_dir);
+
+	parent_dir->dir_bitmap[index] = 1;
 
 
 	short is_dir_already_present=0; //bool to check if file exist or not
 	int j;
 	for(j=0; j<size_of_dir; j++)
 	{
-		if(root_dir->dir_bitmap[j] == 1 && !strcmp(root_dir->filenames[j], pathname))
+		if(parent_dir->dir_bitmap[j] == 1 && !strcmp(parent_dir->filenames[j], filename))
 		{
-			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[j]);
+			inode* inode_ptr = (inode *)read_inode(parent_dir->fileinodes[j]);
 			if(inode_ptr->isDir)
 			{	is_dir_already_present = 1;
 				break;
@@ -471,15 +656,15 @@ int my_mkdir(const char *pathname)
 	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 
-	strcpy(root_dir->filenames[index], pathname);
-	root_dir->fileinodes[index] = new_dir_inode_num;
+	strcpy(parent_dir->filenames[index], filename);
+	parent_dir->fileinodes[index] = new_dir_inode_num;
 
 	dir* new_dir = (dir *)malloc(sizeof(dir));
 	new_dir->num_of_files = 0;
 	for(int i=0; i<size_of_dir; i++) //resetting all the entries in the dir
 		new_dir->dir_bitmap[i]=0;
 
-	write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], root_dir);
+	write_data_block(sup_block->data_start_block+parent_dir_inode->data_blocks[0], parent_dir);
 	write_data_block(sup_block->data_start_block+new_dir_inode->data_blocks[0], new_dir);
 	write_inode(new_dir_inode, new_dir_inode_num);
 	
@@ -813,7 +998,43 @@ void print_fd_table()
 	printf("****************************************************\n");
 }
 
-void print_root_dir()
+void print_test()
+{
+	inode* inode_ptr = (inode *)read_inode(7);
+	char block[sup_block->block_size];
+	read_data_block(sup_block->data_start_block+inode_ptr->data_blocks[0], block);
+	dir* _dir = (dir *)block;
+
+	printf("---> %s\n", _dir->filenames[0]);
+
+}
+
+
+void print_dir(dir* root_dir, int* space)
+{
+	(*space)++;
+	// printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
+	for(int i=0; i<size_of_dir; i++)
+	{
+		if(root_dir->dir_bitmap[i] == 1)
+		{
+			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
+			for(int i=0; i<(*space); i++) printf("--");
+			printf("%d Name: %s, Size: %d, Inode: %d, D-Block: %d\n", inode_ptr->isDir, root_dir->filenames[i], inode_ptr->size, 
+						root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
+			if(inode_ptr->isDir)
+			{	
+				char block[sup_block->block_size];
+				read_data_block(sup_block->data_start_block+inode_ptr->data_blocks[0], block);
+				dir* _dir = (dir *)block;
+				print_dir(_dir, space);
+		}	}
+	}
+	(*space)--;
+	// printf("****************************************************\n");
+}
+
+void print_all_files()
 {
 	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
 
@@ -821,16 +1042,19 @@ void print_root_dir()
 	read_data_block(sup_block->data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
-	printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
-	for(int i=0; i<size_of_dir; i++)
-	{
-		if(root_dir->dir_bitmap[i] == 1)
-		{
-			inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
-			printf("%d Name: %s, Size: %d, Inode: %d, D-Block: %d\n", inode_ptr->isDir, root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
-		}
-	}
-	printf("****************************************************\n");
+	int space = -1;
+
+	print_dir(root_dir, &space);
+	// printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
+	// for(int i=0; i<size_of_dir; i++)
+	// {
+	// 	if(root_dir->dir_bitmap[i] == 1)
+	// 	{
+	// 		inode* inode_ptr = (inode *)read_inode(root_dir->fileinodes[i]);
+	// 		printf("%d Name: %s, Size: %d, Inode: %d, D-Block: %d\n", inode_ptr->isDir, root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
+	// 	}
+	// }
+	// printf("****************************************************\n");
 }
 
 void print_inode_bitmap()
