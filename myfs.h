@@ -456,11 +456,79 @@ int my_unlink(const char *pathname)
 	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 	
+
+	dir* parent_dir;
+	inode* parent_dir_inode;
+	int parent_dir_inode_num;
+
+	char *dup_pathname = strdup(pathname);
+
+	int size;
+	char **splited_pathname;
+	char filename[10];
+	
+	splited_pathname = split_pathname(dup_pathname, &size);
+
+	if(size==1)
+	{
+		strcpy(filename, pathname);
+		parent_dir = root_dir;
+		parent_dir_inode = root_inode;
+		parent_dir_inode_num = sup_block->root_inode_num;
+	}
+	else
+	{
+		dir* cur_dir=root_dir;
+		inode* cur_dir_inode=root_inode;
+		int cur_dir_inode_num=sup_block->root_inode_num;
+
+		for(int i=0; i<size; i++)
+		{
+			if(i==size-1)
+			{
+				strcpy(filename, splited_pathname[i]);
+				parent_dir = cur_dir;
+				parent_dir_inode = cur_dir_inode;
+				parent_dir_inode_num = cur_dir_inode_num;
+			}
+			else
+			{
+				int result_found = 0;
+				for(int k=0; k<size_of_dir; k++)
+				{
+					if(cur_dir->dir_bitmap[k]==1 && !strcmp(cur_dir->filenames[k], splited_pathname[i]))
+					{
+						inode* in = (inode *) read_inode(cur_dir->fileinodes[k]);
+						if(in->isDir)
+						{
+							cur_dir_inode_num = cur_dir->fileinodes[k];
+							cur_dir_inode = in;
+							read_data_block(sup_block->data_start_block+in->data_blocks[0], block);
+							cur_dir = (dir *)block;
+							result_found = 1;
+							break;
+						}
+						else
+						{
+							continue;
+						}
+					}
+				}
+
+				if(!result_found)
+				{
+					printf("my_unlink(): Invalid pathanme '%s'. \n", pathname);
+					return -1;
+				}
+			}
+		}
+	}
+
 	short file_found = 0;
 	int index;
 	for(index=0; index<size_of_dir; index++)
 	{
-		if(!strcmp(root_dir->filenames[index], pathname) && root_dir->dir_bitmap[index]==1)
+		if(!strcmp(parent_dir->filenames[index], filename) && parent_dir->dir_bitmap[index]==1)
 		{
 			file_found = 1;
 			break;
@@ -469,7 +537,7 @@ int my_unlink(const char *pathname)
 
 	if(file_found)
 	{
-		int file_inode_num = root_dir->fileinodes[index];
+		int file_inode_num = parent_dir->fileinodes[index];
 		inode* file_inode = (inode *)read_inode(file_inode_num);
 
 		// free datablock and inode for reuse
@@ -481,14 +549,14 @@ int my_unlink(const char *pathname)
 		write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 
 		//remove entry from the directory
-		root_dir->dir_bitmap[index] = 0;
-		root_dir->num_of_files--;
-		root_inode->size -= file_inode->size;
+		parent_dir->dir_bitmap[index] = 0;
+		parent_dir->num_of_files--;
+		parent_dir_inode->size -= file_inode->size;
 
 		//presist root inode data structure
-		write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], (char *) root_dir);
+		write_data_block(sup_block->data_start_block+parent_dir_inode->data_blocks[0], (char *) parent_dir);
 
-		printf("my_unlink(): file %s unlinked successfully.\n", root_dir->filenames[index]);
+		printf("my_unlink(): file %s unlinked successfully.\n", parent_dir->filenames[index]);
 
 		return 0;
 	}
