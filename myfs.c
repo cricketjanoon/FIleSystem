@@ -3,8 +3,10 @@
 #include <string.h>
 #include "myfs.h"
 
+//assuming that dir can store 10 files maximum
 int size_of_dir = 10;
 
+//for file descriptor table 
 fd_entry *fd_list_head=NULL, *fd_list_tail=NULL;
 int cur_fd_num = 0;
 
@@ -12,7 +14,6 @@ char *MAGIC_STRING = "882244";
 
 FILE *disk;
 super_block *sup_block;
-
 
 //Due to shortage of time, I din't write the whole logic myself istead borrowed the function
 // and used it for my purpoes accordingly (6th May, 2020)
@@ -63,6 +64,7 @@ int my_open(const char *pathname, int mode)
 	read_data_block(sup_block->data_start_block + root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
+	//STAR COM1: traverse the pathname to the file and parent directory
 	dir* parent_dir;
 	inode* parent_dir_inode;
 	int parent_dir_inode_num;
@@ -129,9 +131,8 @@ int my_open(const char *pathname, int mode)
 			}
 		}
 	}
+	//END COM1: traverse the pathname to the file and parent directory
 	
-
-
 	//search to see if file exists
 	short is_new_file=1; //bool to check if file exist or not
 	int j;
@@ -274,9 +275,8 @@ int my_write(int fd, void *buffer, int count)
 
 	inode *cur_file_inode = (inode *)read_inode(fd_ent->inode_num);
 
-	printf("Writing %d bytes to inode %d, fd: %d\n", count, fd_ent->inode_num, fd_ent->fd);
+	// printf("Writing %d bytes to inode %d, fd: %d\n", count, fd_ent->inode_num, fd_ent->fd);
 
-	//TODO: handle increase in size of the file
 	int offset = sup_block->data_start_addresss + cur_file_inode->data_blocks[0]*sup_block->block_size + fd_ent->write_offset;
 
 	offset = fseek(disk, offset, SEEK_SET);
@@ -297,7 +297,6 @@ int my_read(int fd, void *buffer, int count)
 {
 	//find file in the file descriptor table
 	fd_entry *fd_ent = find_fd_entry(fd);
-
 	if(fd_ent == NULL)
 	{
 		printf("my_read(): Invalid file descriptor.\n");
@@ -326,13 +325,11 @@ int my_read(int fd, void *buffer, int count)
 		printf("my_read(): File is not opened in read supported mode.\n");
 		return -1;
 	}
-	
 }
 
 int my_close(int fd)
 {
 	fd_entry *fd_ent = find_fd_entry(fd);
-
 	if(fd_ent != NULL)
 	{
 		int rt = remove_fd_entry(fd);
@@ -356,12 +353,13 @@ int my_close(int fd)
 
 int my_unlink(const char *pathname)
 {
+	//read root inode and root directory
 	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
 	char block[sup_block->block_size];
 	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
-	
 
+	//START COM1: traverse the pathname to find the file and parent directory
 	dir* parent_dir;
 	inode* parent_dir_inode;
 	int parent_dir_inode_num;
@@ -428,7 +426,9 @@ int my_unlink(const char *pathname)
 			}
 		}
 	}
+	//END COM1: traverse the pathname to find the file and parent directory
 
+	// now find the file in the parent directory
 	short file_found = 0;
 	int index;
 	for(index=0; index<size_of_dir; index++)
@@ -474,27 +474,32 @@ int my_unlink(const char *pathname)
 
 int my_format(int blocksize)
 {
+	//read root inode
 	inode *root_inode = (inode *)read_inode(sup_block->root_inode_num);
 	
 	read_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 	read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
-	
 
+	//reset inode bitmap and data bitmap
 	for(int i=0; i<sup_block->num_data_blocks; i++)
 		DATA_BITMAP[i] = '0';
 	for(int i=0; i<sup_block->total_num_inodes; i++)
 		INODE_BITMAP[i] = '0';
 
+	//for root directory
 	INODE_BITMAP[sup_block->root_inode_num] = '1';
 	DATA_BITMAP[root_inode->data_blocks[0]] = '1';
 
+	//persist data and inode bitmap
 	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 
+	//read root directory
 	char block[sup_block->block_size];
 	read_data_block(root_inode->data_blocks[0], block);
 	dir *root_dir = (dir *)block;
 
+	//empty the root directory
 	root_inode->size = 0;
 	root_dir->num_of_files = 0;
 	for(int i=0; i<size_of_dir; i++)
@@ -502,6 +507,7 @@ int my_format(int blocksize)
 		root_dir->dir_bitmap[i] = 0;
 	}
 
+	//presist root inode and root directory
 	write_inode(root_inode, sup_block->root_inode_num);
 	write_data_block(sup_block->data_start_block+root_inode->data_blocks[0], root_dir);
 
@@ -514,11 +520,13 @@ int my_format(int blocksize)
 
 int my_mkdir(const char *pathname)
 {
+	//read root inode and root directory
 	inode* root_inode = (inode *)read_inode(sup_block->root_inode_num);
 	char block[sup_block->block_size];
 	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
 	dir* root_dir = (dir *)block;
 
+	//START COM1: traverse the pathanme and find the file and parent directory
 	dir* parent_dir;
 	inode* parent_dir_inode;
 	int parent_dir_inode_num;
@@ -586,14 +594,14 @@ int my_mkdir(const char *pathname)
 			}
 		}
 	}
+	//END COM1: traverse the pathanme and find the file and parent directory
 
-
+	//get avaialble entry in direcotry
 	int index = get_dir_entry(parent_dir);
-
 	parent_dir->dir_bitmap[index] = 1;
 
-
-	short is_dir_already_present=0; //bool to check if file exist or not
+	//check to see if the dir with that name alreasy exits or not
+	short is_dir_already_present=0; 
 	int j;
 	for(j=0; j<size_of_dir; j++)
 	{
@@ -616,6 +624,7 @@ int my_mkdir(const char *pathname)
 	read_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 	read_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 
+	//make inode and direcotry for new direcory
 	int new_dir_inode_num = get_inode_num();
 	inode* new_dir_inode = create_inode(1, 0);
 	int block_num = get_free_datablock(new_dir_inode_num);
@@ -647,11 +656,13 @@ int my_mkdir(const char *pathname)
 
 int my_rmdir(const char *pathname)
 {
+	//read root inode and root directory
 	inode* root_inode = (inode *)read_inode(sup_block->root_inode_num);
 	char block[sup_block->block_size];
 	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
 	dir* root_dir = (dir *)block;
 
+	//START COM1: traverse pathanme and find the file and parent directory
 	dir* parent_dir;
 	inode* parent_dir_inode;
 	int parent_dir_inode_num;
@@ -720,12 +731,12 @@ int my_rmdir(const char *pathname)
 					parent_dir = cur_dir;
 					parent_dir_inode = cur_dir_inode;
 					parent_dir_inode_num = cur_dir_inode_num;	
-				}
-				
+				}	
 			}
 		}
 	}
 
+	//remove the directory and direcotries inside recursively
 	for(int i=0; i<size_of_dir; i++)
 	{
 		if(parent_dir->dir_bitmap[i]==1 && !strcmp(parent_dir->filenames[i], dir_to_remove))
@@ -748,13 +759,13 @@ int my_rmdir(const char *pathname)
 		}
 	}
 
+	//presist freed data blocks and inodes
 	write_inode(parent_dir_inode, parent_dir_inode_num);
 	write_data_block(sup_block->data_start_block+parent_dir_inode->data_blocks[0], parent_dir);
 	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
 	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
 
 }
-
 
 void rm_dir_recursively(dir* dir_to_remove)
 {
@@ -764,6 +775,7 @@ void rm_dir_recursively(dir* dir_to_remove)
 		{
 			inode* inode_ptr = (inode *)read_inode(dir_to_remove->fileinodes[i]);
 
+			//if file is a directory and recursively remove it
 			if(inode_ptr->isDir)
 			{	
 				char block[sup_block->block_size];
@@ -773,7 +785,7 @@ void rm_dir_recursively(dir* dir_to_remove)
 				DATA_BITMAP[inode_ptr->data_blocks[0]] = '0';
 				INODE_BITMAP[dir_to_remove->fileinodes[i]] = '0';
 			}
-			else
+			else // if file, then free inode and datablocks
 			{
 				DATA_BITMAP[inode_ptr->data_blocks[0]] = '0';
 				INODE_BITMAP[dir_to_remove->fileinodes[i]] = '0';
@@ -853,7 +865,6 @@ void mount_filesystem()
 	inode *root = (inode*)malloc(sizeof(inode));
 	int size = sizeof(root_dir);
 	root->size = size;
-	// root->num_of_blocks = size/block_size + ((size%block_size)!=0);
 	root->isDir = 1;
  
 	int block_num = get_free_datablock(sup_block->root_inode_num);
@@ -889,7 +900,6 @@ int get_dir_entry(dir* _dir)
 			return i;
 		}
 	}
-
 	//if no free entry is found, return -1
 	return -1;
 }
@@ -976,7 +986,6 @@ inode* create_inode(int isDir, int size)
 {
 	inode *new = (inode*)malloc(sizeof(inode));
 	new->size=size;
-	// new->num_of_blocks = size/block_size + ((size%block_size)!=0);
 	new->isDir = isDir;
 
 	return new;
@@ -1107,22 +1116,10 @@ void print_fd_table()
 	printf("****************************************************\n");
 }
 
-void print_test()
-{
-	inode* inode_ptr = (inode *)read_inode(7);
-	char block[sup_block->block_size];
-	read_data_block(sup_block->data_start_block+inode_ptr->data_blocks[0], block);
-	dir* _dir = (dir *)block;
-
-	printf("---> %s\n", _dir->filenames[0]);
-
-}
-
-
+//recursively print the direcories and files inside them
 void print_dir(dir* root_dir, int* space)
 {
 	(*space)++;
-	// printf("*********** Filesystem *****************************\n");
 	for(int i=0; i<size_of_dir; i++)
 	{
 		if(root_dir->dir_bitmap[i] == 1)
@@ -1140,7 +1137,6 @@ void print_dir(dir* root_dir, int* space)
 		}	}
 	}
 	(*space)--;
-	// printf("****************************************************\n");
 }
 
 void print_all_files()
@@ -1153,6 +1149,7 @@ void print_all_files()
 
 	int space = -1;
 
+	printf("****************************************************\n");
 	print_dir(root_dir, &space);
 	// printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
 	// for(int i=0; i<size_of_dir; i++)
@@ -1163,7 +1160,7 @@ void print_all_files()
 	// 		printf("%d Name: %s, Size: %d, Inode: %d, D-Block: %d\n", inode_ptr->isDir, root_dir->filenames[i], inode_ptr->size, root_dir->fileinodes[i], inode_ptr->data_blocks[0]);
 	// 	}
 	// }
-	// printf("****************************************************\n");
+	printf("****************************************************\n");
 }
 
 void print_inode_bitmap()

@@ -9,19 +9,16 @@ enum mode { READ, WRITE, APPEND, READ_WRITE };
 typedef struct inode{
 	int isDir;
     int size;
-	// int num_of_blocks;
 	int data_blocks[4];
 	char *sing_block;
 	char *double_block;
 } inode;
 
 //for simplicity assuming that a dir can store maximum of 10 files
-// int size_of_dir = 10;
 typedef struct dir{
 	char filenames[10][10];
 	int fileinodes[10];
 	int dir_bitmap[10]; //hack to check which of the entry in dir is free
-	// int filesizes[10];
 	int num_of_files;
 } dir;
 
@@ -62,9 +59,6 @@ void print_inode_bitmap();
 void print_data_bitmap();
 void print_all_files();
 void print_dir(dir* root_dir, int* space);
-/* file descriptor */
-// fd_entry *fd_list_head=NULL, *fd_list_tail=NULL;
-// int cur_fd_num = 0;
 
 fd_entry *find_fd_entry(int fd_or_inode_num);
 int remove_fd_entry(int fd);
@@ -73,7 +67,6 @@ void print_dir(dir* root_dir, int* space);
 void print_fd_table();
 
 /* Super Block Data */
-// char *MAGIC_STRING = "882244";
 #define BLOCK_SIZE 4096
 #define NUM_DATA_BLOCKS 237
 #define TOTAL_NUM_INODES 1024
