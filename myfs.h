@@ -55,6 +55,8 @@ int read_data_block(int blockNum,void *block);
 char* read_inode(int inum);
 inode* create_inode(int isDir, int size);
 
+void rm_dir_recursively(dir* dir_to_remove);
+
 void print_inode_bitmap();
 void print_data_bitmap();
 void print_root_dir();
@@ -740,6 +742,143 @@ int my_mkdir(const char *pathname)
 	return 0;
 }
 
+int my_rmdir(const char *pathname)
+{
+	inode* root_inode = (inode *)read_inode(sup_block->root_inode_num);
+	char block[sup_block->block_size];
+	read_data_block(sup_block->data_start_block+root_inode->data_blocks[0], block);
+	dir* root_dir = (dir *)block;
+
+	dir* parent_dir;
+	inode* parent_dir_inode;
+	int parent_dir_inode_num;
+
+	char *dup_pathname = strdup(pathname);
+
+	int size;
+	char **splited_pathname;
+	char *dir_to_remove;
+	
+	splited_pathname = split_pathname(dup_pathname, &size);
+
+	if(size==1)
+	{
+		dir_to_remove = strdup(pathname);
+		parent_dir = root_dir;
+		parent_dir_inode = root_inode;
+		parent_dir_inode_num = sup_block->root_inode_num;
+	}
+	else
+	{
+		dir* cur_dir=root_dir;
+		inode* cur_dir_inode=root_inode;
+		int cur_dir_inode_num=sup_block->root_inode_num;
+
+		for(int i=0; i<size; i++)
+		{
+			if(i==size-1)
+			{
+				dir_to_remove = splited_pathname[i];
+				parent_dir = cur_dir;
+				parent_dir_inode = cur_dir_inode;
+				parent_dir_inode_num = cur_dir_inode_num;
+			}
+			else
+			{
+				int result_found = 0;
+				for(int k=0; k<size_of_dir; k++)
+				{
+					if(cur_dir->dir_bitmap[k]==1 && !strcmp(cur_dir->filenames[k], splited_pathname[i]))
+					{
+						inode* in = (inode *) read_inode(cur_dir->fileinodes[k]);
+						if(in->isDir)
+						{
+							cur_dir_inode_num = cur_dir->fileinodes[k];
+							cur_dir_inode = in;
+							read_data_block(sup_block->data_start_block+in->data_blocks[0], block);
+							cur_dir = (dir *)block;
+							result_found = 1;
+							break;
+						}
+						else
+						{
+							continue;
+						}
+					}
+				}
+
+				if(!result_found)
+				{
+					printf("rm_mkdir(): Invalid pathanme '%s'. \n", pathname);
+					return -1;
+				}
+				else
+				{
+					parent_dir = cur_dir;
+					parent_dir_inode = cur_dir_inode;
+					parent_dir_inode_num = cur_dir_inode_num;	
+				}
+				
+			}
+		}
+	}
+
+	for(int i=0; i<size_of_dir; i++)
+	{
+		if(parent_dir->dir_bitmap[i]==1 && !strcmp(parent_dir->filenames[i], dir_to_remove))
+		{
+			inode* in = (inode *) read_inode(parent_dir->fileinodes[i]);
+			if(in->isDir)
+			{
+				char block[sup_block->block_size];
+				read_data_block(sup_block->data_start_block+in->data_blocks[0], block);
+				dir* _dir = (dir *)block;
+
+				rm_dir_recursively(_dir);
+
+				DATA_BITMAP[in->data_blocks[0]] = '0';
+				DATA_BITMAP[parent_dir->fileinodes[i]] = '0';
+				parent_dir->dir_bitmap[i] = 0;
+				parent_dir_inode->size -= in->size;
+				break;
+			}
+		}
+	}
+
+	write_inode(parent_dir_inode, parent_dir_inode_num);
+	write_data_block(sup_block->data_start_block+parent_dir_inode->data_blocks[0], parent_dir);
+	write_data_block(sup_block->data_bitmap_block, DATA_BITMAP);
+	write_data_block(sup_block->inode_bitmap_block, INODE_BITMAP);
+
+}
+
+
+void rm_dir_recursively(dir* dir_to_remove)
+{
+	for(int i=0; i<size_of_dir; i++)
+	{
+		if(dir_to_remove->dir_bitmap[i] == 1)
+		{
+			inode* inode_ptr = (inode *)read_inode(dir_to_remove->fileinodes[i]);
+
+			if(inode_ptr->isDir)
+			{	
+				char block[sup_block->block_size];
+				read_data_block(sup_block->data_start_block+inode_ptr->data_blocks[0], block);
+				dir* _dir = (dir *)block;
+				rm_dir_recursively(_dir);
+				DATA_BITMAP[inode_ptr->data_blocks[0]] = '0';
+				INODE_BITMAP[dir_to_remove->fileinodes[i]] = '0';
+			}
+			else
+			{
+				DATA_BITMAP[inode_ptr->data_blocks[0]] = '0';
+				INODE_BITMAP[dir_to_remove->fileinodes[i]] = '0';
+			}	
+		}
+	}
+}
+
 void mount_filesystem()
 {
 	//open the disk file for both reading and writting
@@ -1081,7 +1220,7 @@ void print_test()
 void print_dir(dir* root_dir, int* space)
 {
 	(*space)++;
-	// printf("*********** Root Dir(number_of_files: %d) ***********\n", root_dir->num_of_files);
+	// printf("*********** Filesystem *****************************\n");
 	for(int i=0; i<size_of_dir; i++)
 	{
 		if(root_dir->dir_bitmap[i] == 1)
